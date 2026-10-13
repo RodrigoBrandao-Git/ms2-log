@@ -1,0 +1,1353 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0d0c">
+<meta name="description" content="Leitor dos logs .msl gravados pelo MS2 Dash: gráficos e resumo da sessão.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); } body { margin: 0; }</style>
+</head>
+<body>
+<title>MS2 Log Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: barra do arquivo no topo -> faixa de resumo (tiles) -> graficos em
+   faixas empilhadas com eixo de tempo comum -> tabela de canais. Visual do
+   proprio dash (painel escuro + laranja do portal), so tema escuro. */
+:root {
+  --bg: #0e0d0c;
+  --panel: #171513;
+  --panel-2: #1f1c19;
+  --line: #2c2723;
+  --fg: #ede7e0;
+  --muted: #8f867c;
+  --accent: #fd7f00;
+  --good: #3ddc84;
+  --warn: #ffb020;
+  --bad: #ff5440;
+  --font-display: "Barlow Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --r: 10px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.45;
+  padding-inline: 16px;
+  padding-block: 0 40px;
+  -webkit-tap-highlight-color: transparent;
+}
+.wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+
+/* ── Barra do arquivo ── */
+.top {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  background: var(--bg);
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-block: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  font-family: var(--font-display); font-weight: 700; font-size: 1.45rem;
+  letter-spacing: .06em; text-transform: uppercase; line-height: 1;
+  display: flex; align-items: baseline; gap: 6px;
+}
+.brand b { color: var(--accent); font-weight: 700; }
+.file { flex: 1 1 180px; min-width: 0; }
+.file-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+.btn {
+  font: 600 .95rem var(--font-body);
+  border-radius: 8px; padding: 10px 16px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--fg);
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+}
+.btn:focus-visible, .chip:focus-visible, .tile:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn-back { padding: 8px 12px; text-decoration: none; font-size: 1.1rem; line-height: 1; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #140b00; }
+.btn-primary:active { filter: brightness(.9); }
+#fileInput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+.notice {
+  border: 1px dashed var(--accent); border-radius: var(--r);
+  padding: 10px 14px; color: var(--fg); font-size: .9rem;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.notice strong { color: var(--accent); font-family: var(--font-display); letter-spacing: .08em; text-transform: uppercase; font-size: .95rem; }
+.error { border-color: var(--bad); }
+.error strong { color: var(--bad); }
+
+/* ── Resumo ── */
+.section-title {
+  font-family: var(--font-display); font-weight: 600; font-size: .95rem;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  margin: 0 0 10px;
+}
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.tile {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 12px 14px; text-align: left; color: var(--fg); font: inherit;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+button.tile { cursor: pointer; }
+button.tile:hover { border-color: #463d35; }
+.tile-label { color: var(--muted); font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; }
+.tile-value {
+  font-family: var(--font-display); font-weight: 600; font-size: 2rem; line-height: 1.05;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tile-value small { font-size: .95rem; color: var(--muted); font-weight: 500; margin-left: 3px; }
+.tile-sub { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.tile[data-tone="bad"]  { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.tile[data-tone="bad"] .tile-value { color: var(--bad); }
+.tile[data-tone="warn"] .tile-value { color: var(--warn); }
+/* Cartao de canal selecionado nos chips: min e max lado a lado, cada um
+   clicavel. Ocupa 2 colunas da grade quando cabe. */
+.tile-range { grid-column: span 2; border-color: color-mix(in srgb, var(--c) 40%, var(--line)); gap: 6px; }
+.tile-range .tile-label { display: flex; align-items: center; gap: 6px; }
+.tile-range .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
+.range-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.range-btn {
+  font: inherit; color: var(--fg); text-align: left; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 1px; min-width: 0;
+}
+.range-btn:hover { border-color: color-mix(in srgb, var(--c) 60%, var(--line)); }
+.range-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.range-lbl { color: var(--muted); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
+.range-val { font-family: var(--font-display); font-weight: 600; font-size: 1.5rem; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.range-val small { font-size: .85rem; color: var(--muted); font-weight: 500; margin-left: 3px; }
+@media (max-width: 340px) { .tile-range { grid-column: auto; } }
+
+/* ── Grafico ── */
+.chart-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: 500 .85rem var(--font-body); color: var(--muted);
+  background: transparent; border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 11px 5px 9px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); opacity: .35; }
+.chip[aria-pressed="true"] { color: var(--fg); border-color: color-mix(in srgb, var(--c) 60%, var(--line)); background: color-mix(in srgb, var(--c) 12%, transparent); }
+.chip[aria-pressed="true"] i { opacity: 1; }
+.chart-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chart-tools .hint { color: var(--muted); font-size: .8rem; flex: 1 1 200px; }
+
+/* ── Reproducao do log (play) ── */
+.play-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.play-btn { min-width: 132px; justify-content: center; }
+.play-speed {
+  font: 600 .9rem var(--font-body); color: var(--fg); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 8px;
+}
+.play-speed:focus-visible, #playSlider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#playSlider { flex: 1 1 220px; min-width: 0; accent-color: var(--accent); }
+.play-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; white-space: nowrap; }
+/* Valores ao vivo dos canais ligados — "painel" durante a reproducao */
+.readout { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.readout:empty { display: none; }
+.ro { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.ro-name { color: var(--muted); font-size: .72rem; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ro-val { font-family: var(--font-display); font-weight: 600; font-size: 1.6rem; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ro-val small { font-size: .8rem; color: var(--muted); font-weight: 500; margin-left: 3px; }
+.chart-tools .btn { padding: 6px 12px; font-size: .85rem; }
+.canvas-box { position: relative; border-radius: 6px; overflow: hidden; background: var(--bg); }
+#chart { display: block; width: 100%; touch-action: pan-y; cursor: crosshair; }
+.empty-chart { color: var(--muted); padding: 30px 10px; text-align: center; }
+
+/* ── Tabela ── */
+.table-box { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: .9rem; }
+th, td { padding: 9px 12px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { color: var(--muted); font-weight: 500; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid var(--line); }
+tbody tr { border-bottom: 1px solid var(--line); cursor: pointer; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--panel-2); }
+td .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+td.unit { color: var(--muted); text-align: left; }
+tr[data-on="false"] td:first-child { color: var(--muted); }
+
+/* ── Abas (Sessão | Comparar logs) ── */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -6px; }
+.tabs button {
+  font: 600 .95rem var(--font-body); color: var(--muted); background: none; border: 0; cursor: pointer;
+  padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.view { display: flex; flex-direction: column; gap: 18px; }
+
+/* ── Comparar logs: A (linha cheia, laranja) x B (tracejada, azul) ── */
+:root { --cmp-a: #fd7f00; --cmp-b: #4fc3f7; }
+.cmp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.cmp-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cmp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.cmp-badge {
+  font-family: var(--font-display); font-weight: 700; font-size: 1rem; line-height: 1;
+  width: 26px; height: 26px; border-radius: 6px; display: inline-grid; place-items: center;
+  border: 2px solid var(--c); color: var(--c); flex: none;
+}
+.cmp-file { color: var(--fg); font-weight: 600; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 100px; min-width: 0; }
+.cmp-file.none { color: var(--muted); font-weight: 400; }
+.btn-sm { padding: 5px 10px; font-size: .8rem; }
+.seg-toggle { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg-toggle span { font-size: .8rem; color: var(--muted); padding: 0 8px; }
+.seg-toggle button { font: 600 .82rem var(--font-body); color: var(--muted); background: transparent; border: 0; padding: 6px 12px; cursor: pointer; }
+.seg-toggle button[aria-pressed="true"] { background: var(--panel-2); color: var(--fg); }
+.seg-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cmp-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: .82rem; color: var(--muted); }
+.cmp-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.cmp-legend i { width: 18px; height: 0; border-top: 2px solid var(--c); }
+.cmp-legend i.dash { border-top-style: dashed; }
+.cmp-off { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cmp-off span { font-family: var(--font-display); font-weight: 600; font-size: 1rem; color: var(--cmp-b); min-width: 84px; text-align: center; font-variant-numeric: tabular-nums; }
+.cmp-note { margin: 0; color: var(--muted); font-size: .82rem; }
+.cmp-table td.delta { color: var(--muted); }
+#cmpChart { display: block; width: 100%; touch-action: pan-y; cursor: crosshair; }
+#cmpChart.dragging { cursor: grabbing; }
+#cmpFileInput { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.manual summary { cursor: pointer; color: var(--fg); font-weight: 600; font-size: .9rem; }
+.manual summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.manual-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 10px; }
+.manual-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: .85rem; color: var(--muted); }
+.manual-row input {
+  width: 84px; font: 600 .95rem var(--font-body); color: var(--fg); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-variant-numeric: tabular-nums;
+}
+.manual-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.manual-msg { font-size: .82rem; color: var(--muted); margin: 8px 0 0; }
+.manual-msg.err { color: var(--bad); }
+
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 3px dashed var(--accent); font-family: var(--font-display); font-size: 1.6rem;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+}
+@media (max-width: 480px) {
+  .tile-value { font-size: 1.7rem; }
+  .brand { font-size: 1.25rem; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <a class="btn btn-back" id="backLink" href="/" hidden aria-label="Voltar ao portal do dash">←</a>
+    <div class="brand">MS2 <b>Log</b></div>
+    <div class="file">
+      <div class="file-name" id="fileName">—</div>
+      <div class="file-meta" id="fileMeta"></div>
+    </div>
+    <label class="btn btn-primary" for="fileInput">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4.5V13h12V6H8L6.5 4.5H2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      Abrir log
+    </label>
+    <input type="file" id="fileInput">
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <nav class="tabs" role="tablist" aria-label="Telas">
+    <button type="button" role="tab" id="tabSession" aria-selected="true" aria-controls="viewSession">Sessão</button>
+    <button type="button" role="tab" id="tabCompare" aria-selected="false" aria-controls="viewCompare">Comparar logs</button>
+  </nav>
+
+  <div class="view" id="viewSession" role="tabpanel" aria-labelledby="tabSession">
+    <section aria-labelledby="sumTitle">
+      <h2 class="section-title" id="sumTitle">Resumo da sessão</h2>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section aria-labelledby="chartTitle">
+      <h2 class="section-title" id="chartTitle">Gráficos</h2>
+      <div class="chart-card">
+        <div class="chips" id="chips" role="group" aria-label="Canais exibidos"></div>
+        <div class="chart-tools">
+          <span class="hint" id="hint">Toque para marcar um instante · arraste para mover · pinça ou roda do mouse para zoom</span>
+          <button class="btn" id="zoomOut" type="button" aria-label="Diminuir zoom">−</button>
+          <button class="btn" id="zoomIn" type="button" aria-label="Aumentar zoom">+</button>
+          <button class="btn" id="zoomAll" type="button">Ver tudo</button>
+        </div>
+        <div class="play-bar">
+          <button class="btn btn-primary play-btn" id="playBtn" type="button" aria-label="Reproduzir o log">▶ Reproduzir</button>
+          <select class="play-speed" id="playSpeed" aria-label="Velocidade da reprodução">
+            <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+            <option value="4">4×</option><option value="8">8×</option>
+          </select>
+          <input type="range" id="playSlider" min="0" max="1" step="0.1" value="0" aria-label="Linha do tempo do log">
+          <span class="play-time" id="playTime">0:00.0 / 0:00.0</span>
+        </div>
+        <div class="readout" id="readout" aria-live="off"></div>
+        <div class="canvas-box">
+          <canvas id="chart" aria-label="Gráfico dos canais do log ao longo do tempo"></canvas>
+          <div class="empty-chart" id="emptyChart" hidden>Escolha pelo menos um canal acima.</div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="tblTitle">
+      <h2 class="section-title" id="tblTitle">Todos os canais</h2>
+      <div class="table-box">
+        <table>
+          <thead><tr><th>Canal</th><th>Unid.</th><th>Mín.</th><th>Média</th><th>Máx.</th><th>Máx. em</th></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="view" id="viewCompare" role="tabpanel" aria-labelledby="tabCompare" hidden>
+    <section class="chart-card" aria-label="Logs comparados">
+      <div class="cmp-grid">
+        <div class="cmp-side">
+          <div class="cmp-head"><span class="cmp-badge" style="--c:var(--cmp-a)">A</span><span class="cmp-file" id="cmpFileA">—</span></div>
+          <span class="hint">O log aberto em cima (botão Abrir log).</span>
+        </div>
+        <div class="cmp-side">
+          <div class="cmp-head">
+            <span class="cmp-badge" style="--c:var(--cmp-b)">B</span><span class="cmp-file none" id="cmpFileB">nenhum</span>
+          </div>
+          <div class="cmp-head">
+            <label class="btn btn-sm btn-primary" for="cmpFileInput">Abrir log B</label>
+            <button class="btn btn-sm" type="button" id="cmpSameLog">Usar o mesmo log</button>
+            <input type="file" id="cmpFileInput">
+          </div>
+        </div>
+      </div>
+      <details class="manual" id="manualBox">
+        <summary>Alinhar por tempo (manual)</summary>
+        <div class="manual-grid">
+          <div class="manual-row"><span class="cmp-badge" style="--c:var(--cmp-a)">A</span> de <input id="mAi" inputmode="decimal" placeholder="mm:ss" aria-label="A início"> até <input id="mAf" inputmode="decimal" placeholder="mm:ss" aria-label="A fim"></div>
+          <div class="manual-row"><span class="cmp-badge" style="--c:var(--cmp-b)">B</span> de <input id="mBi" inputmode="decimal" placeholder="mm:ss" aria-label="B início"> até <input id="mBf" inputmode="decimal" placeholder="mm:ss" aria-label="B fim"></div>
+        </div>
+        <div class="cmp-head" style="margin-top:10px"><button class="btn btn-sm btn-primary" type="button" id="mApply">Aplicar</button></div>
+        <p class="manual-msg" id="mMsg">O início do B é encaixado no início do A, e o zoom vai pra esse trecho. Tempo no formato mm:ss (ex.: 11:02.5) ou em segundos.</p>
+      </details>
+    </section>
+
+    <section class="chart-card" aria-label="Gráfico de comparação">
+      <div class="chips" id="cmpChips" role="group" aria-label="Canais exibidos"></div>
+      <div class="chart-tools">
+        <div class="seg-toggle" role="group" aria-label="O que o arrasto faz">
+          <span>Arrastar:</span>
+          <button type="button" data-drag="b" aria-pressed="true">move o B</button>
+          <button type="button" data-drag="pan" aria-pressed="false">move o gráfico</button>
+        </div>
+        <div class="cmp-off">
+          <button type="button" class="btn btn-sm" id="cmpOffM" aria-label="Atrasar B meio segundo">−0.5 s</button>
+          <span id="cmpOffTxt">B +0.0 s</span>
+          <button type="button" class="btn btn-sm" id="cmpOffP" aria-label="Adiantar B meio segundo">+0.5 s</button>
+          <button type="button" class="btn btn-sm" id="cmpReset">Voltar ao alinhamento</button>
+        </div>
+      </div>
+      <div class="chart-tools">
+        <div class="cmp-legend">
+          <span><i style="--c:var(--cmp-a)"></i>A</span>
+          <span><i class="dash" style="--c:var(--cmp-b)"></i>B</span>
+        </div>
+        <span class="hint">Pinça ou roda do mouse para zoom · toque para ver os valores</span>
+        <button class="btn" id="cmpZoomOut" type="button" aria-label="Diminuir zoom">−</button>
+        <button class="btn" id="cmpZoomIn" type="button" aria-label="Aumentar zoom">+</button>
+        <button class="btn" id="cmpZoomAll" type="button">Ver tudo</button>
+      </div>
+      <div class="canvas-box">
+        <canvas id="cmpChart" aria-label="Logs A e B sobrepostos ao longo do tempo"></canvas>
+        <div class="empty-chart" id="cmpEmpty" hidden></div>
+      </div>
+      <p class="cmp-note" id="cmpNote"></p>
+    </section>
+
+    <section aria-labelledby="cmpTblTitle">
+      <h2 class="section-title" id="cmpTblTitle">Trecho visível: A x B</h2>
+      <div class="table-box">
+        <table class="cmp-table">
+          <thead><tr><th>Canal</th><th>A mín / máx</th><th>B mín / máx</th><th>A média</th><th>B média</th><th>B − A (média)</th></tr></thead>
+          <tbody id="cmpBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+<div class="drop-overlay" id="dropOverlay" hidden>Solte o log aqui</div>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const COLORS = ['#fd7f00','#4fc3f7','#3ddc84','#ffd54f','#ff6e6e','#b39ddb','#80cbc4',
+                '#f48fb1','#aed581','#90a4ae','#ffab91','#81d4fa','#e6ee9c','#ce93d8'];
+const AXIS_H = 24;
+let LANE_H = 86;   // recalculado a cada desenho (laneHeight)
+// Altura de cada faixa: divide ~62% da altura da janela (PC) / ~50%
+// (celular) entre os canais ligados — com 1 canal a faixa cresce (visao
+// geral), com muitos volta ao minimo de 86 px.
+function laneHeight(n) {
+  const wide = window.innerWidth >= 900;
+  const avail = window.innerHeight * (wide ? 0.62 : 0.5) - AXIS_H;
+  const max = wide ? 320 : 180;
+  return Math.round(Math.min(max, Math.max(86, avail / Math.max(1, n))));
+}
+const STORE_KEY = 'ms2log.channels';
+
+let D = null;          // log carregado
+let sel = [];          // indices das colunas exibidas
+let v0 = 0, v1 = 1;    // janela de tempo visivel
+let cursorT = null;    // instante marcado (crosshair)
+
+// ───────────────────────── Leitura do .msl ─────────────────────────
+// Formato do dash (SdLogger.h): titulo, data/autor, nomes, unidades, dados
+// separados por TAB. Tambem aceita logs do TunerStudio (mais linhas de
+// cabecalho, marcas "MARK" no meio) procurando a linha que comeca em "Time".
+function parseLog(text) {
+  const lines = text.split(/\r?\n/);
+  let h = -1;
+  for (let i = 0; i < Math.min(lines.length, 80); i++) {
+    const first = lines[i].split(/[\t;,]/)[0].trim().replace(/^"|"$/g, '');
+    if (/^time$/i.test(first)) { h = i; break; }
+  }
+  if (h < 0) throw new Error('Não encontrei a linha de cabeçalho com a coluna "Time". Confira se o arquivo é um log .msl.');
+  const head = lines[h];
+  const sep = head.includes('\t') ? '\t' : head.includes(';') ? ';' : ',';
+  const clean = s => (s || '').trim().replace(/^"|"$/g, '');
+  const names = head.split(sep).map(clean);
+  let units = names.map(() => '');
+  let start = h + 1;
+  const u = (lines[h + 1] || '').split(sep);
+  if (u.length > 1 && !isFinite(parseFloat(u[0]))) { units = names.map((_, i) => clean(u[i])); start = h + 2; }
+
+  const nc = names.length, tmp = names.map(() => []);
+  for (let i = start; i < lines.length; i++) {
+    const ln = lines[i];
+    if (!ln) continue;
+    const p = ln.split(sep);
+    if (p.length < nc) continue;
+    const t = parseFloat(p[0]);
+    if (!isFinite(t)) continue;
+    for (let c = 0; c < nc; c++) { const v = parseFloat(p[c]); tmp[c].push(isFinite(v) ? v : NaN); }
+  }
+  if (tmp[0].length < 2) throw new Error('O arquivo não tem amostras suficientes para desenhar. Pode ser um log de uma conexão muito curta.');
+  return { names, units, cols: tmp.map(a => Float64Array.from(a)), n: tmp[0].length };
+}
+
+// ───────────────────────── Estatisticas ─────────────────────────
+function analyze(L) {
+  const t = L.cols[0], n = L.n;
+  L.stats = L.cols.map(c => {
+    let mn = Infinity, mx = -Infinity, sum = 0, cnt = 0, iMx = 0, iMn = 0;
+    for (let i = 0; i < n; i++) {
+      const v = c[i];
+      if (!isFinite(v)) continue;
+      if (v < mn) { mn = v; iMn = i; }
+      if (v > mx) { mx = v; iMx = i; }
+      sum += v; cnt++;
+    }
+    return cnt ? { min: mn, max: mx, avg: sum / cnt, tMax: t[iMx], tMin: t[iMn] } : { min: NaN, max: NaN, avg: NaN };
+  });
+
+  const find = re => L.names.findIndex((nm, i) => i > 0 && re.test(nm));
+  L.idx = {
+    rpm: find(/^rpm$/i), map: find(/^map$/i), tps: find(/^tps$/i), clt: find(/^clt$/i),
+    mat: find(/^mat$/i), lambda: find(/^lambda$/i), batt: find(/^batt/i),
+    oil: find(/^oil/i), fuel: find(/^fuel( ?press.*)?$/i)
+  };
+
+  // Motor ligado = RPM > 0. "Armado" = 3s depois de pegar — mesma carencia
+  // do alerta de pressao do dash (PRESS_ALERT_GRACE_MS em DisplayDash.h),
+  // pra pressao de oleo/combustivel minima nao contar a subida da partida.
+  const running = new Uint8Array(n), armed = new Uint8Array(n);
+  let runTime = 0, since = null, starts = 0;
+  const rpm = L.idx.rpm >= 0 ? L.cols[L.idx.rpm] : null;
+  for (let i = 0; i < n; i++) {
+    const on = rpm ? rpm[i] > 0 : false;
+    if (on) {
+      if (since === null) { since = t[i]; starts++; }
+      running[i] = 1;
+      armed[i] = (t[i] - since) >= 3 ? 1 : 0;
+      if (i > 0 && running[i - 1]) runTime += Math.min(Math.max(t[i] - t[i - 1], 0), 1);
+    } else since = null;
+  }
+  L.running = running; L.armed = armed; L.runTime = runTime; L.starts = starts;
+  L.duration = t[n - 1] - t[0];
+  L.rate = L.duration > 0 ? (n - 1) / L.duration : 0;
+}
+
+function extremeWhere(L, ci, mask, wantMax) {
+  if (ci < 0) return null;
+  const c = L.cols[ci], t = L.cols[0];
+  let best = null, bt = 0;
+  for (let i = 0; i < L.n; i++) {
+    if (mask && !mask[i]) continue;
+    const v = c[i];
+    if (!isFinite(v)) continue;
+    if (best === null || (wantMax ? v > best : v < best)) { best = v; bt = t[i]; }
+  }
+  return best === null ? null : { v: best, t: bt };
+}
+
+// ───────────────────────── Formatacao ─────────────────────────
+function fmt(v) {
+  if (v === null || v === undefined || !isFinite(v)) return '—';
+  const a = Math.abs(v);
+  return a >= 1000 ? v.toFixed(0) : a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : v.toFixed(2);
+}
+function fmtT(s) {
+  if (!isFinite(s)) return '—';
+  s = Math.max(0, s);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+  const ss = sec.toFixed(1).padStart(4, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss.padStart(4, '0')}` : `${m}:${ss}`;
+}
+function fmtDur(s) {
+  if (!isFinite(s)) return '—';
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = Math.round(s % 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}min` : m ? `${m}min ${String(sec).padStart(2, '0')}s` : `${sec}s`;
+}
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+// ───────────────────────── Resumo (tiles) ─────────────────────────
+function renderTiles() {
+  const L = D, I = L.idx, out = [];
+  out.push({ label: 'Duração', value: fmtDur(L.duration), sub: `${L.n.toLocaleString('pt-BR')} amostras · ${L.rate.toFixed(1)} Hz` });
+  if (I.rpm >= 0) {
+    out.push({ label: 'Motor ligado', value: fmtDur(L.runTime),
+      sub: L.starts ? `${L.starts} ${L.starts === 1 ? 'partida' : 'partidas'}` : 'motor não girou' });
+    const r = extremeWhere(L, I.rpm, null, true);
+    if (r) out.push({ label: 'RPM máximo', value: fmt(r.v), sub: `em ${fmtT(r.t - L.cols[0][0])}`, t: r.t });
+  }
+  if (I.map >= 0) {
+    const r = extremeWhere(L, I.map, null, true);
+    // Log nao tem baro: boost aproximado contra 1 atm (101.3 kPa).
+    if (r) out.push({ label: 'MAP máximo', value: fmt(r.v), unit: 'kPa',
+      sub: `≈ ${((r.v - 101.3) / 100).toFixed(2)} bar de boost · ${fmtT(r.t - L.cols[0][0])}`, t: r.t });
+  }
+  if (I.clt >= 0) {
+    const r = extremeWhere(L, I.clt, null, true);
+    if (r) out.push({ label: 'Água máxima', value: fmt(r.v), unit: '°C', sub: `em ${fmtT(r.t - L.cols[0][0])}`, t: r.t,
+      tone: r.v >= 105 ? 'bad' : r.v >= 98 ? 'warn' : null });
+  }
+  if (I.mat >= 0) {
+    const r = extremeWhere(L, I.mat, null, true);
+    if (r) out.push({ label: 'Ar máximo', value: fmt(r.v), unit: '°C', sub: `em ${fmtT(r.t - L.cols[0][0])}`, t: r.t });
+  }
+  const pressTile = (ci, label) => {
+    if (ci < 0) return;
+    const r = extremeWhere(L, ci, L.armed, false);
+    out.push(r
+      ? { label, value: fmt(r.v), unit: 'bar', sub: `motor ligado · ${fmtT(r.t - L.cols[0][0])}`, t: r.t, tone: r.v < 0.5 ? 'bad' : null }
+      : { label, value: '—', sub: 'sem leitura com motor ligado' });
+  };
+  pressTile(I.oil, 'Óleo mínimo');
+  pressTile(I.fuel, 'Combustível mín.');
+  if (I.lambda >= 0) {
+    const lo = extremeWhere(L, I.lambda, L.armed, false), hi = extremeWhere(L, I.lambda, L.armed, true);
+    if (lo && hi) out.push({ label: 'Lambda (motor ligado)', value: `${lo.v.toFixed(2)}–${hi.v.toFixed(2)}`,
+      sub: `mais pobre em ${fmtT(hi.t - L.cols[0][0])}`, t: hi.t });
+  }
+  if (I.batt >= 0) {
+    const r = extremeWhere(L, I.batt, L.armed, false) || extremeWhere(L, I.batt, null, false);
+    if (r) out.push({ label: 'Bateria mínima', value: fmt(r.v), unit: 'V', sub: `em ${fmtT(r.t - L.cols[0][0])}`, t: r.t,
+      tone: r.v < 12 ? 'warn' : null });
+  }
+
+  // Canais ligados nos chips que nao tem cartao fixo acima: um cartao de
+  // min/max cada, com os dois valores clicaveis (pula pro momento no grafico).
+  // Some quando o canal e desligado. Min/max do log inteiro, igual a tabela.
+  const covered = new Set([I.rpm, I.map, I.clt, I.mat, I.oil, I.fuel, I.lambda, I.batt].filter(i => i > 0));
+  const t0 = L.cols[0][0];
+  const extra = sel.filter(ci => !covered.has(ci) && isFinite(L.stats[ci].min)).map(ci => {
+    const s = L.stats[ci], unit = L.units[ci] ? `<small>${esc(L.units[ci])}</small>` : '';
+    const half = (label, v, tt) => `<button type="button" class="range-btn" data-t="${tt}" title="Ver o ${label} no gráfico">
+        <span class="range-lbl">${label}</span>
+        <span class="range-val">${fmt(v)}${unit}</span>
+        <span class="tile-sub">${fmtT(tt - t0)}</span></button>`;
+    return `<div class="tile tile-range" style="--c:${COLORS[(ci - 1) % COLORS.length]}">
+      <span class="tile-label"><i class="dot"></i>${esc(L.names[ci])}</span>
+      <div class="range-pair">${half('mínimo', s.min, s.tMin)}${half('máximo', s.max, s.tMax)}</div></div>`;
+  });
+
+  $('#tiles').innerHTML = out.map((o, k) => {
+    const tag = o.t !== undefined ? 'button' : 'div';
+    const attrs = o.t !== undefined ? ` type="button" data-t="${o.t}" title="Ver este momento no gráfico"` : '';
+    return `<${tag} class="tile"${attrs}${o.tone ? ` data-tone="${o.tone}"` : ''}>
+      <span class="tile-label">${esc(o.label)}</span>
+      <span class="tile-value">${esc(o.value)}${o.unit ? `<small>${esc(o.unit)}</small>` : ''}</span>
+      <span class="tile-sub">${esc(o.sub || '')}</span></${tag}>`;
+  }).join('') + extra.join('');
+}
+
+// ───────────────────────── Tabela ─────────────────────────
+function renderTable() {
+  const L = D, t0 = L.cols[0][0];
+  $('#tbody').innerHTML = L.names.map((nm, ci) => {
+    if (ci === 0) return '';
+    const s = L.stats[ci];
+    return `<tr tabindex="0" data-ci="${ci}" data-on="${sel.includes(ci)}">
+      <td><span class="sw" style="background:${COLORS[(ci - 1) % COLORS.length]}"></span>${esc(nm)}</td>
+      <td class="unit">${esc(L.units[ci] || '')}</td>
+      <td>${fmt(s.min)}</td><td>${fmt(s.avg)}</td><td>${fmt(s.max)}</td>
+      <td>${isFinite(s.max) ? fmtT(s.tMax - t0) : '—'}</td></tr>`;
+  }).join('');
+}
+
+// ───────────────────────── Chips de canal ─────────────────────────
+function renderChips() {
+  $('#chips').innerHTML = D.names.map((nm, ci) => ci === 0 ? '' :
+    `<button type="button" class="chip" data-ci="${ci}" aria-pressed="${sel.includes(ci)}" style="--c:${COLORS[(ci - 1) % COLORS.length]}"><i></i>${esc(nm)}</button>`
+  ).join('');
+  $('#cmpChips').innerHTML = $('#chips').innerHTML;   // mesma selecao nas duas telas
+}
+function toggleChannel(ci) {
+  sel = sel.includes(ci) ? sel.filter(x => x !== ci) : [...sel, ci].sort((a, b) => a - b);
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(sel.map(i => D.names[i]))); } catch (e) {}
+  renderChips(); renderTable(); renderTiles(); requestDraw();
+}
+function defaultSelection() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if (Array.isArray(saved)) {
+      const s = saved.map(n => D.names.indexOf(n)).filter(i => i > 0);
+      if (s.length) return s.sort((a, b) => a - b);
+    }
+  } catch (e) {}
+  const I = D.idx;
+  const pick = [I.rpm, I.map, I.lambda, I.oil, I.clt].filter(i => i > 0);
+  return (pick.length ? pick : D.names.map((_, i) => i).slice(1, 5)).sort((a, b) => a - b);
+}
+
+// ───────────────────────── Grafico ─────────────────────────
+const cv = $('#chart'), ctx = cv.getContext('2d');
+let drawQueued = false;
+function requestDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); }); } }
+
+// Primeiro indice com t[i] >= x (t vem em ordem crescente).
+function lowerBound(t, x) { let lo = 0, hi = t.length; while (lo < hi) { const m = (lo + hi) >> 1; if (t[m] < x) lo = m + 1; else hi = m; } return lo; }
+function nearestIndex(x) {
+  const t = D.cols[0]; let i = lowerBound(t, x);
+  if (i >= D.n) return D.n - 1;
+  if (i > 0 && (x - t[i - 1]) < (t[i] - x)) i--;
+  return i;
+}
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function niceStep(span, px) {
+  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  for (const s of steps) if (px / (span / s) >= 74) return s;
+  return 7200;
+}
+
+function draw() {
+  if (!D) return;
+  if (cmpVisible()) cmpDraw();   // chips ligados/desligados refletem na comparacao
+  updatePlayTime();              // relogio/linha do tempo/painel seguem o cursor
+  $('#emptyChart').hidden = sel.length > 0;
+  cv.hidden = sel.length === 0;
+  if (!sel.length) return;
+
+  LANE_H = laneHeight(sel.length);
+  const W = cv.clientWidth, H = sel.length * LANE_H + AXIS_H, dpr = window.devicePixelRatio || 1;
+  cv.style.height = H + 'px';
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const C = { bg: css('--bg'), line: css('--line'), fg: css('--fg'), muted: css('--muted'), accent: css('--accent'), panel: css('--panel-2') };
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+
+  const t = D.cols[0], t0 = t[0], span = v1 - v0;
+  const xOf = tt => (tt - v0) / span * W;
+  const i0 = Math.max(0, lowerBound(t, v0) - 1), i1 = Math.min(D.n - 1, lowerBound(t, v1) + 1);
+  const ic = cursorT !== null ? nearestIndex(cursorT) : -1;
+
+  // Grade vertical do tempo (atras de tudo)
+  const step = niceStep(span, W);
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1;
+  const firstTick = Math.ceil((v0 - t0) / step) * step + t0;
+  ctx.beginPath();
+  for (let tt = firstTick; tt <= v1; tt += step) { const x = Math.round(xOf(tt)) + .5; ctx.moveTo(x, 0); ctx.lineTo(x, H - AXIS_H); }
+  ctx.stroke();
+
+  sel.forEach((ci, k) => {
+    const y0 = k * LANE_H, c = D.cols[ci], st = D.stats[ci], color = COLORS[(ci - 1) % COLORS.length];
+    let lo = st.min, hi = st.max;
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (!(hi > lo)) { lo -= 1; hi += 1; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const top = y0 + 26, bot = y0 + LANE_H - 6;
+    const yOf = v => bot - (v - lo) / (hi - lo) * (bot - top);
+
+    if (k > 0) { ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(0, y0 + .5); ctx.lineTo(W, y0 + .5); ctx.stroke(); }
+
+    // Linha do zero quando a faixa cruza o zero (ex.: pressao negativa com a bomba desligada)
+    if (lo < 0 && hi > 0) {
+      ctx.save(); ctx.setLineDash([3, 4]); ctx.strokeStyle = C.muted; ctx.globalAlpha = .5;
+      ctx.beginPath(); ctx.moveTo(0, Math.round(yOf(0)) + .5); ctx.lineTo(W, Math.round(yOf(0)) + .5); ctx.stroke(); ctx.restore();
+    }
+
+    // Serie: por coluna de pixel, desenha primeiro/min/max/ultimo — fica fiel
+    // mesmo com dezenas de milhares de amostras na tela.
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, y0 + 1, W, LANE_H - 1); ctx.clip();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let px = null, fst = 0, mn = 0, mx = 0, lst = 0, started = false;
+    const flush = () => {
+      if (px === null) return;
+      if (!started) { ctx.moveTo(px, yOf(fst)); started = true; } else ctx.lineTo(px, yOf(fst));
+      if (mn !== mx) { ctx.lineTo(px, yOf(mn)); ctx.lineTo(px, yOf(mx)); }
+      ctx.lineTo(px, yOf(lst));
+    };
+    for (let i = i0; i <= i1; i++) {
+      const v = c[i];
+      if (!isFinite(v)) continue;
+      const x = Math.round(xOf(t[i]));
+      if (x !== px) { flush(); px = x; fst = mn = mx = lst = v; }
+      else { if (v < mn) mn = v; if (v > mx) mx = v; lst = v; }
+    }
+    flush();
+    ctx.stroke();
+    ctx.restore();
+
+    // Escala (max/min do canal) a direita
+    ctx.font = `500 11px ${css('--font-body')}`; ctx.fillStyle = C.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+    ctx.fillText(fmt(st.max), W - 6, top - 2);
+    ctx.textBaseline = 'bottom'; ctx.fillText(fmt(st.min), W - 6, bot + 2);
+
+    // Rotulo: nome + valor no instante marcado
+    const unit = D.units[ci] ? ' ' + D.units[ci] : '';
+    const val = ic >= 0 ? fmt(c[ic]) + unit : '';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = `600 13px ${css('--font-body')}`;
+    const nameW = ctx.measureText(D.names[ci]).width;
+    ctx.font = `600 15px ${css('--font-display')}`;
+    const valW = val ? ctx.measureText(val).width + 10 : 0;
+    ctx.fillStyle = C.panel; ctx.globalAlpha = .92;
+    ctx.fillRect(6, y0 + 5, nameW + valW + 26, 19); ctx.globalAlpha = 1;
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(14, y0 + 14.5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.font = `600 13px ${css('--font-body')}`; ctx.fillStyle = C.fg; ctx.fillText(D.names[ci], 22, y0 + 15);
+    if (val) { ctx.font = `600 15px ${css('--font-display')}`; ctx.fillStyle = color; ctx.fillText(val, 22 + nameW + 10, y0 + 15); }
+
+    if (ic >= 0 && isFinite(c[ic])) {
+      const x = xOf(t[ic]);
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, yOf(c[ic]), 3.5, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+
+  // Eixo de tempo
+  const ay = H - AXIS_H;
+  ctx.fillStyle = C.bg; ctx.fillRect(0, ay, W, AXIS_H);
+  ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(0, ay + .5); ctx.lineTo(W, ay + .5); ctx.stroke();
+  ctx.font = `500 11px ${css('--font-body')}`; ctx.fillStyle = C.muted; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  for (let tt = firstTick; tt <= v1; tt += step) {
+    const x = xOf(tt);
+    if (x < 18 || x > W - 18) continue;
+    ctx.fillText(fmtT(tt - t0).replace(/\.0$/, ''), x, ay + AXIS_H / 2);
+  }
+
+  // Cursor (instante marcado)
+  if (ic >= 0) {
+    const x = Math.round(xOf(t[ic])) + .5;
+    if (x >= 0 && x <= W) {
+      ctx.strokeStyle = C.accent; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ay); ctx.stroke();
+      const lbl = fmtT(t[ic] - t0);
+      ctx.font = `600 12px ${css('--font-body')}`;
+      const w = ctx.measureText(lbl).width + 12;
+      const bx = Math.min(Math.max(x - w / 2, 0), W - w);
+      ctx.fillStyle = C.accent; ctx.fillRect(bx, ay + 3, w, AXIS_H - 6);
+      ctx.fillStyle = '#140b00'; ctx.textAlign = 'center'; ctx.fillText(lbl, bx + w / 2, ay + AXIS_H / 2);
+    }
+  }
+}
+
+// ───────────────────────── Zoom / pan / cursor ─────────────────────────
+function minSpan() { return Math.max(2, D.duration > 0 ? (D.duration / D.n) * 10 : 2); }
+function setView(a, b) {
+  const T0 = D.cols[0][0], T1 = D.cols[0][D.n - 1], full = Math.max(T1 - T0, 1e-6);
+  let span = Math.min(Math.max(b - a, Math.min(minSpan(), full)), full);
+  a = Math.min(Math.max(a, T0), T1 - span);
+  v0 = a; v1 = a + span;
+  requestDraw();
+}
+function zoomAt(factor, fx) {
+  const span = v1 - v0, tAt = v0 + fx * span, ns = span * factor;
+  setView(tAt - fx * ns, tAt - fx * ns + ns);
+}
+function focusTime(tt) {
+  const half = Math.max(minSpan(), 15);
+  cursorT = tt;
+  setView(tt - half, tt + half);
+  cv.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+}
+
+const ptrs = new Map();
+let gesture = null;
+const xRel = e => e.clientX - cv.getBoundingClientRect().left;
+
+cv.addEventListener('pointerdown', e => {
+  if (!D) return;
+  if (playing) { playing = false; playUI(); }   // mexer no grafico pausa a reproducao
+  cv.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId, xRel(e));
+  if (ptrs.size === 1) gesture = { type: 'tap', sx: xRel(e), v0, v1 };
+  else if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    gesture = { type: 'pinch', d: Math.max(Math.abs(a - b), 10), mid: (a + b) / 2, v0, v1 };
+  }
+});
+cv.addEventListener('pointermove', e => {
+  if (!D) return;
+  if (!ptrs.has(e.pointerId)) {
+    if (e.pointerType === 'mouse') { cursorT = v0 + xRel(e) / cv.clientWidth * (v1 - v0); requestDraw(); }
+    return;
+  }
+  ptrs.set(e.pointerId, xRel(e));
+  const W = cv.clientWidth;
+  if (gesture && (gesture.type === 'tap' || gesture.type === 'pan')) {
+    const dx = xRel(e) - gesture.sx;
+    if (gesture.type === 'tap' && Math.abs(dx) > 6) gesture.type = 'pan';
+    if (gesture.type === 'pan') {
+      const span = gesture.v1 - gesture.v0, dt = -dx / W * span;
+      setView(gesture.v0 + dt, gesture.v1 + dt);
+    }
+  } else if (gesture && gesture.type === 'pinch' && ptrs.size >= 2) {
+    const [a, b] = [...ptrs.values()];
+    const d = Math.max(Math.abs(a - b), 10), mid = (a + b) / 2;
+    const span = gesture.v1 - gesture.v0, tMid = gesture.v0 + gesture.mid / W * span;
+    const ns = span * gesture.d / d;
+    setView(tMid - mid / W * ns, tMid - mid / W * ns + ns);
+  }
+});
+function endPointer(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  if (gesture && gesture.type === 'tap' && ptrs.size === 1) {
+    cursorT = v0 + xRel(e) / cv.clientWidth * (v1 - v0);
+    requestDraw();
+  }
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 1) { const x = [...ptrs.values()][0]; gesture = { type: 'pan', sx: x, v0, v1 }; }
+  else if (ptrs.size === 0) gesture = null;
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); if (!ptrs.size) gesture = null; });
+cv.addEventListener('wheel', e => {
+  if (!D) return;
+  e.preventDefault();
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) { const dt = e.deltaX / cv.clientWidth * (v1 - v0); setView(v0 + dt, v1 + dt); return; }
+  zoomAt(Math.exp(e.deltaY * 0.0015), xRel(e) / cv.clientWidth);
+}, { passive: false });
+
+$('#zoomIn').addEventListener('click', () => zoomAt(0.6, cursorT !== null && cursorT >= v0 && cursorT <= v1 ? (cursorT - v0) / (v1 - v0) : 0.5));
+$('#zoomOut').addEventListener('click', () => zoomAt(1 / 0.6, 0.5));
+$('#zoomAll').addEventListener('click', () => setView(D.cols[0][0], D.cols[0][D.n - 1]));
+$('#chips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) toggleChannel(+b.dataset.ci); });
+$('#tbody').addEventListener('click', e => { const r = e.target.closest('tr'); if (r) toggleChannel(+r.dataset.ci); });
+$('#tbody').addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.ci) { e.preventDefault(); toggleChannel(+e.target.dataset.ci); } });
+$('#tiles').addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (b) focusTime(+b.dataset.t); });
+window.addEventListener('resize', requestDraw);
+
+// ───────────────────────── Reproduzir o log ─────────────────────────
+// Play anda o cursor (cursorT) pelo tempo REAL do log (coluna Time) vezes a
+// velocidade escolhida; o grafico segue o cursor e o painel mostra os
+// valores ao vivo dos canais ligados. Mexer no grafico pausa.
+let playing = false, playSpeed = 1, playLast = 0;
+const PLAY_WINDOW_S = 30;   // janela visivel ao dar play com o log inteiro na tela
+
+function playUI() {
+  $('#playBtn').textContent = playing ? '❚❚ Pausar' : '▶ Reproduzir';
+  $('#playBtn').setAttribute('aria-label', playing ? 'Pausar a reprodução' : 'Reproduzir o log');
+}
+function renderReadout() {
+  const box = $('#readout');
+  if (!D || cursorT === null || !sel.length) { box.innerHTML = ''; return; }
+  const i = nearestIndex(cursorT);
+  box.innerHTML = sel.map(ci => {
+    const u = D.units[ci] ? `<small>${esc(D.units[ci])}</small>` : '';
+    return `<div class="ro" style="--c:${COLORS[(ci - 1) % COLORS.length]}"><div class="ro-name">${esc(D.names[ci])}</div>` +
+           `<div class="ro-val">${fmt(D.cols[ci][i])}${u}</div></div>`;
+  }).join('');
+}
+function updatePlayTime() {
+  if (!D) return;
+  const t = D.cols[0], t0 = t[0], t1 = t[D.n - 1], c = cursorT === null ? t0 : cursorT;
+  $('#playTime').textContent = `${fmtT(c - t0)} / ${fmtT(t1 - t0)}`;
+  const sl = $('#playSlider');
+  sl.max = (t1 - t0).toFixed(1);
+  if (document.activeElement !== sl) sl.value = (c - t0).toFixed(1);
+  renderReadout();
+}
+// Mantem o cursor visivel: se sair da faixa 10%-80% da janela, reposiciona
+// com o cursor a 30% (sobra espaco pra ver o que vem pela frente).
+function followCursor() {
+  const span = v1 - v0;
+  if (cursorT < v0 + span * 0.1 || cursorT > v0 + span * 0.8) { const a = cursorT - span * 0.3; setView(a, a + span); }
+}
+function playStep(ts) {
+  if (!playing || !D) return;
+  const dt = playLast ? Math.min((ts - playLast) / 1000, 0.25) : 0;   // aba em segundo plano: nao da salto
+  playLast = ts;
+  const t1 = D.cols[0][D.n - 1];
+  cursorT = Math.min(cursorT + dt * playSpeed, t1);
+  followCursor(); requestDraw();
+  if (cursorT >= t1) { playing = false; playUI(); return; }
+  requestAnimationFrame(playStep);
+}
+function togglePlay() {
+  if (!D) return;
+  if (playing) { playing = false; playUI(); return; }
+  const t = D.cols[0], t0 = t[0], t1 = t[D.n - 1];
+  if (cursorT === null || cursorT >= t1) cursorT = t0;
+  if (v1 - v0 > PLAY_WINDOW_S * 4) setView(cursorT - PLAY_WINDOW_S * 0.3, cursorT + PLAY_WINDOW_S * 0.7);
+  playing = true; playLast = 0; playUI();
+  requestAnimationFrame(playStep);
+}
+$('#playBtn').addEventListener('click', togglePlay);
+$('#playSpeed').addEventListener('change', e => { playSpeed = +e.target.value || 1; });
+$('#playSlider').addEventListener('input', e => {
+  if (!D) return;
+  cursorT = D.cols[0][0] + (+e.target.value);
+  const span = v1 - v0, a = cursorT - span * 0.3;
+  if (cursorT < v0 || cursorT > v1) setView(a, a + span); else requestDraw();
+});
+// Espaco = play/pausa (fora de campos de texto e so' na aba Sessao)
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || $('#viewSession').hidden) return;
+  if (e.target.closest('input, select, textarea, button, summary')) return;
+  e.preventDefault(); togglePlay();
+});
+
+// ───────────────────────── Comparar logs (tela propria) ─────────────────────────
+// A = log aberto em cima (D); B = outro arquivo (DB) ou o mesmo log
+// (cmpUseSame). Os dois inteiros sobrepostos no eixo de tempo do A; o B e'
+// desenhado em (tempo B + cmpOff). O usuario arrasta o B, usa +-0.5 s ou
+// alinha por tempo manual. Zoom/pan proprios desta tela (cw0..cw1, no tempo
+// do A) — independentes do grafico da sessao.
+let DB = null, cmpUseSame = false;
+let cw0 = 0, cw1 = 1;
+let cmpOff = 0, cmpBase = 0;          // cmpBase = deslocamento do ultimo alinhamento
+let cmpHoverX = null, cmpDragMode = 'b';
+const cmpCv = $('#cmpChart'), cmpCtx = cmpCv.getContext('2d');
+let cmpGeom = null;                   // { pw, W, PADX } do ultimo desenho
+
+const cmpLogB = () => DB || (cmpUseSame ? D : null);
+const cmpVisible = () => !$('#viewCompare').hidden;
+
+function cmpFullRange() {
+  const tA = D.cols[0], LB = cmpLogB();
+  let a = tA[0], b = tA[D.n - 1];
+  if (LB) { const tB = LB.cols[0]; a = Math.min(a, tB[0] + cmpOff); b = Math.max(b, tB[LB.n - 1] + cmpOff); }
+  return [a, b];
+}
+function cmpSetView(a, b) {
+  const [F0, F1] = cmpFullRange(), full = Math.max(F1 - F0, 1e-6);
+  const span = Math.min(Math.max(b - a, Math.min(1, full)), full);
+  a = Math.min(Math.max(a, F0), F1 - span);
+  cw0 = a; cw1 = a + span;
+  cmpDraw();
+}
+// Alinhamento padrao: os dois logs comecando juntos, mostrando tudo.
+function cmpResetAlign() {
+  const LB = cmpLogB();
+  cmpOff = cmpBase = LB ? D.cols[0][0] - LB.cols[0][0] : 0;
+  const [a, b] = cmpFullRange(); cw0 = a; cw1 = b > a ? b : a + 1;
+}
+function cmpOffText() {
+  const d = Math.round((cmpOff - cmpBase) * 10) / 10;
+  $('#cmpOffTxt').textContent = 'B ' + (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' s';
+}
+function cmpWin(L, from, to) {
+  const t = L.cols[0];
+  const i0 = Math.max(0, lowerBound(t, from) - 1), i1 = Math.min(L.n - 1, lowerBound(t, to));
+  return i1 > i0 ? { L, i0, i1 } : null;
+}
+function colRange(L, ci, i0, i1) {
+  let lo = Infinity, hi = -Infinity, sum = 0, n = 0;
+  if (ci < 0) return { lo, hi, avg: NaN };
+  const c = L.cols[ci];
+  for (let i = i0; i <= i1; i++) { const v = c[i]; if (!isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; sum += v; n++; }
+  return { lo, hi, avg: n ? sum / n : NaN };
+}
+
+function renderCmpTable(A, B, chans) {
+  const body = $('#cmpBody');
+  if (!A || !B) { body.innerHTML = ''; return; }
+  const sgn = v => { const r = Math.abs(v) < 0.005 ? 0 : v; return (r > 0 ? '+' : '') + fmt(r); };   // sem "-0.00"
+  const tA0 = A.L.cols[0][0], tB0 = B.L.cols[0][0];
+  const rows = [`<tr><td>Trecho</td><td>${fmtT(cw0 - tA0)} → ${fmtT(cw1 - tA0)}</td><td>${fmtT(cw0 - cmpOff - tB0)} → ${fmtT(cw1 - cmpOff - tB0)}</td><td colspan="3" class="delta">${(cw1 - cw0).toFixed(1)} s visíveis</td></tr>`];
+  for (const nm of chans) {
+    const ia = A.L.names.indexOf(nm), ib = B.L.names.indexOf(nm);
+    const a = colRange(A.L, ia, A.i0, A.i1), b = colRange(B.L, ib, B.i0, B.i1);
+    const u = A.L.units[ia] || '';
+    const mm = r => isFinite(r.lo) ? `${fmt(r.lo)} / ${fmt(r.hi)}` : '—';
+    rows.push(`<tr><td>${esc(nm)}${u ? ` <span style="color:var(--muted)">${esc(u)}</span>` : ''}</td><td>${mm(a)}</td><td>${mm(b)}</td>` +
+              `<td>${fmt(a.avg)}</td><td>${fmt(b.avg)}</td><td class="delta">${isFinite(a.avg) && isFinite(b.avg) ? sgn(b.avg - a.avg) : '—'}</td></tr>`);
+  }
+  body.innerHTML = rows.join('');
+}
+
+// Linha com balde por pixel (primeiro/min/max/ultimo): fiel e rapida mesmo
+// com dois logs inteiros (dezenas de milhares de pontos) na tela.
+function cmpLine(ctx, seg, ci, xOf, yOf, color, dash) {
+  if (!seg || ci < 0) return;
+  const c = seg.L.cols[ci], t = seg.L.cols[0], off = seg.off || 0;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.setLineDash(dash || []);
+  ctx.beginPath();
+  let px = null, f = 0, mn = 0, mx = 0, l = 0, started = false;
+  const flush = () => {
+    if (px === null) return;
+    if (!started) { ctx.moveTo(px, yOf(f)); started = true; } else ctx.lineTo(px, yOf(f));
+    if (mn !== mx) { ctx.lineTo(px, yOf(mn)); ctx.lineTo(px, yOf(mx)); }
+    ctx.lineTo(px, yOf(l));
+  };
+  for (let i = seg.i0; i <= seg.i1; i++) {
+    const v = c[i]; if (!isFinite(v)) continue;
+    const x = Math.round(xOf(t[i] + off));
+    if (x !== px) { flush(); px = x; f = mn = mx = l = v; } else { if (v < mn) mn = v; if (v > mx) mx = v; l = v; }
+  }
+  flush(); ctx.stroke(); ctx.restore();
+}
+
+function cmpDraw() {
+  if (!D || !cmpVisible()) return;
+  const LB = cmpLogB();
+  $('#cmpFileA').textContent = D.fileName || '—';
+  const fb = $('#cmpFileB');
+  fb.textContent = DB ? DB.fileName : cmpUseSame ? `mesmo log (${D.fileName})` : 'nenhum';
+  fb.classList.toggle('none', !LB);
+  $('#cmpSameLog').textContent = cmpUseSame ? 'Usar o mesmo log ✓' : 'Usar o mesmo log';
+  cmpOffText();
+
+  const chans = sel.map(ci => D.names[ci]);
+  const A = cmpWin(D, cw0, cw1);
+  const B = LB ? cmpWin(LB, cw0 - cmpOff, cw1 - cmpOff) : null;
+  if (B) B.off = cmpOff;
+  let msg = '';
+  if (!LB) msg = 'Abra o log B (botão acima) para sobrepor ao A. Ou use o mesmo log para comparar dois trechos dele.';
+  else if (!chans.length) msg = 'Ligue pelo menos um canal nos chips acima.';
+  else if (!A && !B) msg = 'Nada nesta janela. Toque em Ver tudo.';
+  $('#cmpEmpty').hidden = !msg; $('#cmpEmpty').textContent = msg; cmpCv.hidden = !!msg;
+  $('#cmpNote').textContent = LB ? (cmpDragMode === 'b' ? 'Arrastar move só o B. Para mover a janela, troque para "move o gráfico" ou use dois dedos.' : 'Arrastar move a janela. Para deslocar o B, troque para "move o B".') : '';
+  renderCmpTable(A, B, chans);
+  if (msg) { cmpGeom = null; return; }
+
+  LANE_H = laneHeight(chans.length);
+  const W = cmpCv.clientWidth, H = chans.length * LANE_H + AXIS_H, dpr = window.devicePixelRatio || 1;
+  cmpCv.style.height = H + 'px';
+  if (cmpCv.width !== Math.round(W * dpr) || cmpCv.height !== Math.round(H * dpr)) { cmpCv.width = Math.round(W * dpr); cmpCv.height = Math.round(H * dpr); }
+  const ctx = cmpCtx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const C = { bg: css('--bg'), line: css('--line'), fg: css('--fg'), muted: css('--muted'), panel: css('--panel-2'), a: css('--cmp-a'), b: css('--cmp-b') };
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+
+  const PADX = 0, pw = W, span = cw1 - cw0, xOf = x => (x - cw0) / span * pw;
+  cmpGeom = { pw, W, PADX };
+  const tA0 = D.cols[0][0];
+  const step = niceStep(span, W);
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.beginPath();
+  const first = Math.ceil((cw0 - tA0) / step) * step + tA0;
+  for (let x = first; x <= cw1; x += step) { const X = Math.round(xOf(x)) + .5; ctx.moveTo(X, 0); ctx.lineTo(X, H - AXIS_H); }
+  ctx.stroke();
+
+  const hA = (cmpHoverX !== null && A) ? Math.min(D.n - 1, lowerBound(D.cols[0], cmpHoverX)) : -1;
+  const hB = (cmpHoverX !== null && B) ? Math.min(LB.n - 1, lowerBound(LB.cols[0], cmpHoverX - cmpOff)) : -1;
+  chans.forEach((nm, k) => {
+    const y0 = k * LANE_H, ciA = D.names.indexOf(nm), ciB = LB.names.indexOf(nm);
+    const ra = A ? colRange(D, ciA, A.i0, A.i1) : { lo: Infinity, hi: -Infinity };
+    const rb = B ? colRange(LB, ciB, B.i0, B.i1) : { lo: Infinity, hi: -Infinity };
+    let lo = Math.min(ra.lo, rb.lo), hi = Math.max(ra.hi, rb.hi);
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (!(hi > lo)) { lo -= 1; hi += 1; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const top = y0 + 26, bot = y0 + LANE_H - 6, yOf = v => bot - (v - lo) / (hi - lo) * (bot - top);
+    if (k > 0) { ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(0, y0 + .5); ctx.lineTo(W, y0 + .5); ctx.stroke(); }
+    ctx.save(); ctx.beginPath(); ctx.rect(0, y0 + 1, W, LANE_H - 1); ctx.clip();
+    cmpLine(ctx, A, ciA, xOf, yOf, C.a);
+    cmpLine(ctx, B, ciB, xOf, yOf, C.b, [6, 4]);
+    ctx.restore();
+
+    ctx.font = `500 11px ${css('--font-body')}`; ctx.fillStyle = C.muted; ctx.textAlign = 'right';
+    ctx.textBaseline = 'top'; ctx.fillText(fmt(hi - pad), W - 6, top - 2);
+    ctx.textBaseline = 'bottom'; ctx.fillText(fmt(lo + pad), W - 6, bot + 2);
+
+    const u = D.units[ciA] ? ' ' + D.units[ciA] : '';
+    const parts = [{ txt: nm, color: C.fg, font: `600 13px ${css('--font-body')}` }];
+    if (hA >= 0 && ciA >= 0) parts.push({ txt: 'A ' + fmt(D.cols[ciA][hA]) + u, color: C.a, font: `600 14px ${css('--font-display')}` });
+    if (hB >= 0 && ciB >= 0) parts.push({ txt: 'B ' + fmt(LB.cols[ciB][hB]) + u, color: C.b, font: `600 14px ${css('--font-display')}` });
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    let w = 16; for (const p of parts) { ctx.font = p.font; w += ctx.measureText(p.txt).width + 10; }
+    ctx.fillStyle = C.panel; ctx.globalAlpha = .92; ctx.fillRect(6, y0 + 5, w, 19); ctx.globalAlpha = 1;
+    let x = 14; for (const p of parts) { ctx.font = p.font; ctx.fillStyle = p.color; ctx.fillText(p.txt, x, y0 + 15); x += ctx.measureText(p.txt).width + 10; }
+    for (const [L, ci, h, off, col] of [[D, ciA, hA, 0, C.a], [LB, ciB, hB, cmpOff, C.b]]) {
+      if (h < 0 || ci < 0 || !isFinite(L.cols[ci][h])) continue;
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(xOf(L.cols[0][h] + off), yOf(L.cols[ci][h]), 3.5, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+
+  const ay = H - AXIS_H;
+  ctx.fillStyle = C.bg; ctx.fillRect(0, ay, W, AXIS_H);
+  ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(0, ay + .5); ctx.lineTo(W, ay + .5); ctx.stroke();
+  ctx.font = `500 11px ${css('--font-body')}`; ctx.fillStyle = C.muted; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  for (let x = first; x <= cw1; x += step) { const X = xOf(x); if (X > 22 && X < W - 60) ctx.fillText(fmtT(x - tA0).replace(/\.0$/, ''), X, ay + AXIS_H / 2); }
+  ctx.textAlign = 'right'; ctx.fillText('tempo do A', W - 4, ay + AXIS_H / 2);
+  if (cmpHoverX !== null) {
+    const X = Math.round(xOf(cmpHoverX)) + .5;
+    ctx.strokeStyle = C.muted; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(X, 0); ctx.lineTo(X, ay); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+// ── Gestos: 1 dedo/mouse = move o B ou a janela (conforme o seletor) ou
+// marca o cursor (toque sem arrastar); 2 dedos = pinca (zoom + pan);
+// roda = zoom no ponto (roda horizontal = pan).
+const cmpPtrs = new Map();
+let cmpGest = null;
+const cmpXRel = e => e.clientX - cmpCv.getBoundingClientRect().left;
+const cmpTAt = x => cw0 + x / (cmpGeom ? cmpGeom.pw : cmpCv.clientWidth) * (cw1 - cw0);
+cmpCv.addEventListener('pointerdown', e => {
+  if (!cmpGeom) return;
+  try { cmpCv.setPointerCapture(e.pointerId); } catch (_) {}
+  cmpPtrs.set(e.pointerId, cmpXRel(e));
+  if (cmpPtrs.size === 1) cmpGest = { type: 'tap', sx: cmpXRel(e), off: cmpOff, w0: cw0, w1: cw1 };
+  else if (cmpPtrs.size === 2) {
+    const [a, b] = [...cmpPtrs.values()];
+    cmpGest = { type: 'pinch', d: Math.max(Math.abs(a - b), 10), mid: (a + b) / 2, w0: cw0, w1: cw1 };
+  }
+});
+cmpCv.addEventListener('pointermove', e => {
+  if (!cmpGeom) return;
+  if (!cmpPtrs.has(e.pointerId)) {
+    if (e.pointerType === 'mouse') { cmpHoverX = cmpTAt(cmpXRel(e)); cmpDraw(); }
+    return;
+  }
+  cmpPtrs.set(e.pointerId, cmpXRel(e));
+  const pw = cmpGeom.pw;
+  if (cmpGest && (cmpGest.type === 'tap' || cmpGest.type === 'drag')) {
+    const dx = cmpXRel(e) - cmpGest.sx;
+    if (cmpGest.type === 'tap' && Math.abs(dx) > 6) { cmpGest.type = 'drag'; cmpCv.classList.add('dragging'); }
+    if (cmpGest.type === 'drag') {
+      const dt = dx / pw * (cmpGest.w1 - cmpGest.w0);
+      if (cmpDragMode === 'b') { cmpOff = cmpGest.off + dt; cmpHoverX = null; cmpDraw(); }
+      else cmpSetView(cmpGest.w0 - dt, cmpGest.w1 - dt);
+    }
+  } else if (cmpGest && cmpGest.type === 'pinch' && cmpPtrs.size >= 2) {
+    const [a, b] = [...cmpPtrs.values()];
+    const d = Math.max(Math.abs(a - b), 10), mid = (a + b) / 2, span = cmpGest.w1 - cmpGest.w0;
+    const tMid = cmpGest.w0 + cmpGest.mid / pw * span, ns = span * cmpGest.d / d;
+    cmpSetView(tMid - mid / pw * ns, tMid - mid / pw * ns + ns);
+  }
+});
+function cmpEnd(e) {
+  if (!cmpPtrs.has(e.pointerId)) return;
+  if (cmpGest && cmpGest.type === 'tap' && cmpPtrs.size === 1 && e.type === 'pointerup') { cmpHoverX = cmpTAt(cmpXRel(e)); cmpDraw(); }
+  cmpPtrs.delete(e.pointerId);
+  cmpCv.classList.remove('dragging');
+  if (cmpPtrs.size === 1) { const x = [...cmpPtrs.values()][0]; cmpGest = { type: 'drag', sx: x, off: cmpOff, w0: cw0, w1: cw1 }; }
+  else if (!cmpPtrs.size) cmpGest = null;
+}
+cmpCv.addEventListener('pointerup', cmpEnd);
+cmpCv.addEventListener('pointercancel', cmpEnd);
+cmpCv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && !cmpPtrs.size) { cmpHoverX = null; cmpDraw(); } });
+cmpCv.addEventListener('wheel', e => {
+  if (!cmpGeom) return;
+  e.preventDefault();
+  const span = cw1 - cw0;
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) { const dt = e.deltaX / cmpGeom.pw * span; cmpSetView(cw0 + dt, cw1 + dt); return; }
+  const f = Math.exp(e.deltaY * 0.0015), fx = cmpXRel(e) / cmpGeom.pw, tAt = cw0 + fx * span, ns = span * f;
+  cmpSetView(tAt - fx * ns, tAt - fx * ns + ns);
+}, { passive: false });
+function cmpZoom(factor) {
+  const span = cw1 - cw0, c = cmpHoverX !== null && cmpHoverX >= cw0 && cmpHoverX <= cw1 ? cmpHoverX : (cw0 + cw1) / 2;
+  const fx = (c - cw0) / span, ns = span * factor;
+  cmpSetView(c - fx * ns, c - fx * ns + ns);
+}
+$('#cmpZoomIn').addEventListener('click', () => cmpZoom(0.6));
+$('#cmpZoomOut').addEventListener('click', () => cmpZoom(1 / 0.6));
+$('#cmpZoomAll').addEventListener('click', () => { const [a, b] = cmpFullRange(); cmpSetView(a, b); });
+$('#cmpOffM').addEventListener('click', () => { cmpOff -= 0.5; cmpDraw(); });
+$('#cmpOffP').addEventListener('click', () => { cmpOff += 0.5; cmpDraw(); });
+$('#cmpReset').addEventListener('click', () => { cmpOff = cmpBase; cmpDraw(); });
+document.querySelectorAll('[data-drag]').forEach(b => b.addEventListener('click', () => {
+  cmpDragMode = b.dataset.drag;
+  document.querySelectorAll('[data-drag]').forEach(o => o.setAttribute('aria-pressed', o === b));
+  cmpDraw();
+}));
+$('#cmpChips').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) toggleChannel(+b.dataset.ci); });
+$('#cmpSameLog').addEventListener('click', () => {
+  if (DB) DB = null;
+  cmpUseSame = true; cmpResetAlign(); cmpHoverX = null; cmpDraw();
+});
+$('#cmpFileInput').addEventListener('change', e => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const L = parseLog(String(rd.result)); analyze(L); L.fileName = file.name;
+      DB = L; cmpUseSame = false; cmpResetAlign(); cmpHoverX = null; cmpDraw();
+    } catch (err) {
+      showNotice(`<strong>Não abriu o log B</strong><span>${esc(file.name)}: ${esc(err.message)}</span>`, true);
+    }
+  };
+  rd.readAsText(file);
+});
+
+// Alinhamento manual: "A de x ate y" e "B de x ate y" (tempo desde o
+// inicio de cada log). Encaixa o inicio do B no do A e da' zoom no trecho.
+function parseTime(s) {
+  s = String(s || '').trim().replace(',', '.');
+  if (!s) return NaN;
+  const p = s.split(':').map(Number);
+  if (p.some(v => !isFinite(v) || v < 0)) return NaN;
+  return p.reduce((acc, v) => acc * 60 + v, 0);
+}
+$('#mApply').addEventListener('click', () => {
+  const m = $('#mMsg'); m.classList.remove('err');
+  const LB = cmpLogB();
+  if (!LB) { m.textContent = 'Abra o log B primeiro (ou use o mesmo log).'; m.classList.add('err'); return; }
+  const ai = parseTime($('#mAi').value), af = parseTime($('#mAf').value), bi = parseTime($('#mBi').value), bf = parseTime($('#mBf').value);
+  if (isNaN(ai) || isNaN(bi)) { m.textContent = 'Preencha pelo menos o início do A e o início do B (ex.: 11:02 ou 662).'; m.classList.add('err'); return; }
+  const da = isNaN(af) ? NaN : af - ai, db = isNaN(bf) ? NaN : bf - bi;
+  if (da <= 0 || db <= 0) { m.textContent = 'O fim tem que ser depois do início.'; m.classList.add('err'); return; }
+  const tA0 = D.cols[0][0], tB0 = LB.cols[0][0];
+  cmpOff = cmpBase = (tA0 + ai) - (tB0 + bi);
+  const dur = Math.max(isNaN(da) ? 0 : da, isNaN(db) ? 0 : db) || 15;
+  cmpHoverX = null;
+  cmpSetView(tA0 + ai - dur * 0.05, tA0 + ai + dur * 1.05);
+  m.textContent = (!isNaN(da) && !isNaN(db) && Math.abs(da - db) > 0.2)
+    ? `Aplicado. Os trechos têm durações diferentes (A ${da.toFixed(1)} s, B ${db.toFixed(1)} s): a janela mostra o mais longo.`
+    : 'Aplicado: início do B encaixado no início do A.';
+});
+
+// Abas
+function showTab(which) {
+  const cmp = which === 'compare';
+  $('#viewSession').hidden = cmp; $('#viewCompare').hidden = !cmp;
+  $('#tabSession').setAttribute('aria-selected', !cmp); $('#tabCompare').setAttribute('aria-selected', cmp);
+  try { localStorage.setItem('ms2log.tab', which); } catch (e) {}
+  requestAnimationFrame(() => { if (cmp) cmpDraw(); else draw(); });
+}
+$('#tabSession').addEventListener('click', () => showTab('session'));
+$('#tabCompare').addEventListener('click', () => showTab('compare'));
+try { if (localStorage.getItem('ms2log.tab') === 'compare') showTab('compare'); } catch (e) {}
+// Log A novo: B continua o mesmo (se houver), realinhado pelo inicio.
+function cmpOnNewA() { cmpResetAlign(); cmpHoverX = null; cmpDraw(); }
+
+// ───────────────────────── Carregar ─────────────────────────
+function showNotice(html, isError) {
+  const n = $('#notice');
+  n.innerHTML = html; n.classList.toggle('error', !!isError); n.hidden = false;
+}
+function load(L, name, metaExtra) {
+  analyze(L);
+  D = L; D.fileName = name;
+  sel = defaultSelection();
+  cursorT = null;
+  if (playing) { playing = false; playUI(); }
+  v0 = L.cols[0][0]; v1 = L.cols[0][L.n - 1];
+  if (!(v1 > v0)) v1 = v0 + 1;
+  $('#fileName').textContent = name;
+  $('#fileMeta').textContent = `${L.names.length - 1} canais · ${fmtDur(L.duration)}${metaExtra ? ' · ' + metaExtra : ''}`;
+  renderTiles(); renderChips(); renderTable(); requestDraw();
+  cmpOnNewA();   // log A novo: realinha o B (se houver) pelo inicio
+}
+function openFile(file) {
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      load(parseLog(String(rd.result)), file.name, `${(file.size / 1024).toFixed(0)} KB`);
+      $('#notice').hidden = true;
+    } catch (err) {
+      showNotice(`<strong>Não abriu</strong><span>${esc(file.name)}: ${esc(err.message)}</span>`, true);
+    }
+  };
+  rd.onerror = () => showNotice('<strong>Não abriu</strong><span>O aparelho não deixou ler esse arquivo. Tente abrir de novo pelo botão.</span>', true);
+  rd.readAsText(file);
+}
+$('#fileInput').addEventListener('change', e => { openFile(e.target.files[0]); e.target.value = ''; });
+
+let dragDepth = 0;
+window.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('#dropOverlay').hidden = false; e.preventDefault(); } });
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#dropOverlay').hidden = true; } });
+window.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#dropOverlay').hidden = true; openFile(e.dataTransfer.files[0]); });
+
+// ───────────────────────── Log de exemplo ─────────────────────────
+// Sessao sintetica no formato exato do dash (sdWriteMslHeader): ignicao
+// ligada com bomba/sensores sem pressao, partida, aquecimento na lenta,
+// tres puxadas em boost e motor desligado no fim.
+function sampleText() {
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647 - .5;
+  const rows = [
+    'ESP32 MS2 Dash - MS2Extra passthrough log',
+    'Capture Date: n/a (sem RTC), File author: ESP32 MS2 Dash',
+    'Time\tRPM\tMAP\tTPS\tCLT\tMAT\tLambda\tLambda Target\tBatt V\tEGO cor1\tOil\tFuel\tDutyCycle1\tSPK: Spark Advance',
+    's\tRPM\tkPa\t%\tC\tC\tLambda\tLambda\tv\t%\tbar\tbar\t%\tdeg'
+  ];
+  const pulls = [150, 255, 350];
+  let rpm = 0, clt = 52;
+  for (let i = 0; i <= 4200; i++) {
+    const t = i / 10;
+    let target, map, tps, lt = 1.0;
+    const pull = pulls.find(p => t >= p && t < p + 9);
+    if (t < 4) { target = 0; map = 100; tps = 0; }
+    else if (t < 5.5) { target = 260; map = 96; tps = 0; }
+    else if (t > 405) { target = 0; map = 100; tps = 0; }
+    else if (pull !== undefined) {
+      const k = (t - pull) / 9;
+      target = 2600 + k * 3900; tps = 100; map = 105 + Math.min(1, k * 3) * 95; lt = 0.82;
+    } else if (pulls.some(p => t >= p + 9 && t < p + 14)) { target = 2200; tps = 0; map = 32; }
+    else if (t > 60 && t < 405) { target = 2300 + Math.sin(t / 9) * 400; tps = 14; map = 52; }
+    else { target = 950; tps = 0; map = 38; }
+    rpm += (target - rpm) * (target > rpm ? 0.35 : 0.25);
+    if (rpm < 20 && target === 0) rpm = 0;
+    const on = rpm > 150 && t >= 4;
+    clt = Math.min(91 + Math.sin(t / 40) * 1.5, clt + (on ? 0.012 : 0));
+    const prime = t < 2;
+    const oil = on ? Math.min(0.8 + rpm / 1300, 5.6) * Math.min(1, (t - 5.5) / 1.5 + .2) : -1.25;
+    const fuel = (on || prime) ? 3.0 + (map > 100 ? (map - 100) / 100 : 0) : -1.25;
+    const lam = on ? lt + rnd() * 0.04 + (tps === 0 && map < 35 ? 0.15 : 0) : 0;
+    const row = [
+      t.toFixed(3), on || t >= 4 ? Math.max(0, Math.round(rpm + rnd() * 30)) : 0,
+      (map + rnd() * 1.5).toFixed(1), tps.toFixed(1), clt.toFixed(1), (31 + (map > 100 ? (map - 100) / 6 : 0) + rnd()).toFixed(1),
+      lam.toFixed(3), lt.toFixed(3), (on ? 14.1 : t < 5.5 && t >= 4 ? 10.6 : 12.4 + rnd() * .1).toFixed(1),
+      (on ? 100 + rnd() * 6 : 100).toFixed(1), (oil + rnd() * 0.08).toFixed(2), (fuel + rnd() * 0.06).toFixed(2),
+      (on ? Math.min(85, rpm / 90 * (map / 100)) : 0).toFixed(1), (on ? 12 + Math.min(20, rpm / 300) - (map > 100 ? 8 : 0) : 0).toFixed(1)
+    ];
+    rows.push(row.join('\t'));
+  }
+  return rows.join('\n');
+}
+
+// Servido pelo proprio dash (rota /logview?file=log_0011.msl, ver
+// SdLogger.h): baixa o log direto do cartao SD pelo /download. Fora do dash
+// (PWA/artifact) nao ha "?file=" e abre o log de exemplo.
+const remoteFile = new URLSearchParams(location.search).get('file');
+if (remoteFile) {
+  $('#backLink').hidden = false;
+  showNotice(`<strong>Carregando</strong><span>Baixando ${esc(remoteFile)} do cartão do dash. A tela do dash pode congelar alguns segundos enquanto envia.</span>`);
+  fetch('/download?file=' + encodeURIComponent(remoteFile))
+    .then(r => { if (!r.ok) throw new Error(r.status === 503 ? 'o cartão SD está ocupado gravando. Tente de novo em alguns segundos.' : `o dash respondeu com erro ${r.status}.`); return r.text(); })
+    .then(text => {
+      load(parseLog(text), remoteFile, `${(text.length / 1024).toFixed(0)} KB · cartão do dash`);
+      $('#notice').hidden = true;
+    })
+    .catch(err => showNotice(`<strong>Não abriu</strong><span>${esc(remoteFile)}: ${esc(err.message)}</span>`, true));
+} else {
+  load(parseLog(sampleText()), 'exemplo_sessao.msl', 'exemplo');
+  showNotice('<strong>Exemplo</strong><span>Este é um log de demonstração. Toque em <b>Abrir log</b> e escolha um .msl baixado do portal do dash.</span>');
+}
+
+// PWA: so registra o service worker quando servido como app (com manifest).
+if ('serviceWorker' in navigator && location.protocol === 'https:' && document.querySelector('link[rel="manifest"]')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+})();
+</script>
+
+</body>
+</html>
