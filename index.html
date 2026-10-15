@@ -163,6 +163,16 @@ button.tile:hover { border-color: #463d35; }
 .play-speed:focus-visible, #playSlider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #playSlider { flex: 1 1 220px; min-width: 0; accent-color: var(--accent); }
 .play-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; white-space: nowrap; }
+/* Velocidade estimada pela marcha escolhida (RPM x relacoes x pneu) */
+.gear-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gear-lbl { color: var(--muted); font-size: .85rem; }
+.gear-cfg { flex-basis: 100%; }
+.manual-row input.g-wide { width: 190px; }
+.manual-row input.g-sm { width: 60px; }
+.gear-tbl { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.gear-tbl span { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px;
+                 font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gear-tbl b { color: var(--fg); font-weight: 600; }
 /* Valores ao vivo dos canais ligados — "painel" durante a reproducao */
 .readout { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
 .readout:empty { display: none; }
@@ -304,6 +314,22 @@ tr[data-on="false"] td:first-child { color: var(--muted); }
           </select>
           <input type="range" id="playSlider" min="0" max="1" step="0.1" value="0" aria-label="Linha do tempo do log">
           <span class="play-time" id="playTime">0:00.0 / 0:00.0</span>
+        </div>
+        <div class="gear-bar">
+          <label for="gearSel" class="gear-lbl">Velocidade estimada</label>
+          <select class="play-speed" id="gearSel" aria-describedby="gearInfo"></select>
+          <span class="play-time" id="gearInfo"></span>
+          <details class="manual gear-cfg" id="gearBox">
+            <summary>Câmbio e pneu</summary>
+            <div class="manual-grid">
+              <div class="manual-row">Marchas <input id="gRatios" class="g-wide" inputmode="decimal" aria-label="Relação de cada marcha, separadas por espaço"></div>
+              <div class="manual-row">Diferencial <input id="gFinal" inputmode="decimal" aria-label="Relação do diferencial"></div>
+              <div class="manual-row">Pneu <input id="gW" class="g-sm" inputmode="numeric" aria-label="Largura do pneu (mm)"> / <input id="gA" class="g-sm" inputmode="numeric" aria-label="Perfil do pneu (%)"> R <input id="gR" class="g-sm" inputmode="numeric" aria-label="Aro (polegadas)"></div>
+              <div class="manual-row">Ajuste <input id="gAdj" class="g-sm" inputmode="decimal" aria-label="Ajuste fino em porcentagem"> %</div>
+            </div>
+            <p class="manual-msg" id="gMsg"></p>
+            <div class="gear-tbl" id="gTable"></div>
+          </details>
         </div>
         <div class="readout" id="readout" aria-live="off"></div>
         <div class="canvas-box">
@@ -1209,7 +1235,7 @@ $('#cmpFileInput').addEventListener('change', e => {
   const rd = new FileReader();
   rd.onload = () => {
     try {
-      const L = parseLog(String(rd.result)); analyze(L); L.fileName = file.name;
+      const L = parseLog(String(rd.result)); applySpeed(L); analyze(L); L.fileName = file.name;
       DB = L; cmpUseSame = false; cmpResetAlign(); cmpHoverX = null; cmpDraw();
     } catch (err) {
       showNotice(`<strong>Não abriu o log B</strong><span>${esc(file.name)}: ${esc(err.message)}</span>`, true);
@@ -1259,12 +1285,101 @@ try { if (localStorage.getItem('ms2log.tab') === 'compare') showTab('compare'); 
 // Log A novo: B continua o mesmo (se houver), realinhado pelo inicio.
 function cmpOnNewA() { cmpResetAlign(); cmpHoverX = null; cmpDraw(); }
 
+// ───────────────────────── Velocidade estimada ─────────────────────────
+// O log nao tem sensor de velocidade: km/h = RPM / (marcha x diferencial) x
+// circunferencia do pneu, na marcha escolhida no menu. Vira um canal
+// calculado ("Velocidade est.", sempre a ultima coluna) — aparece nos chips,
+// no grafico, no painel do play, no resumo e na tabela como qualquer outro.
+// So' vale com a embreagem solta e sem patinar. "Ajuste %" corrige pneu
+// gasto/deformacao (comparar com GPS). Cambio/pneu/marcha ficam salvos no
+// navegador. Padrao = carro do dono (3.78/2.12/1.43/1.03/0.84, dif. 3.944,
+// 195/50 R15).
+const SPEED_NAME = 'Velocidade est.';
+const GEAR_KEY = 'ms2log.gearbox', GEARSEL_KEY = 'ms2log.gear';
+const GB_DEFAULT = { ratios: [3.78, 2.12, 1.43, 1.03, 0.84], final: 3.944, w: 195, a: 50, r: 15, adj: 0 };
+let GB = GB_DEFAULT, gear = '';
+try { const s = JSON.parse(localStorage.getItem(GEAR_KEY) || 'null'); if (s && Array.isArray(s.ratios) && s.ratios.length) GB = { ...GB_DEFAULT, ...s }; } catch (e) {}
+try { gear = localStorage.getItem(GEARSEL_KEY) || ''; } catch (e) {}
+
+const tireCirc = () => Math.PI * (GB.r * 25.4 + 2 * GB.w * GB.a / 100) / 1000 * (1 + GB.adj / 100);   // m por volta
+const kmhPerRpm = g => tireCirc() * 60 / 1000 / (GB.ratios[g] * GB.final);
+const ord = g => `${g + 1}ª`;
+const fmtN = v => String(v).replace('.', ',');
+
+function fillGearUI() {
+  if (gear !== '' && !(+gear < GB.ratios.length)) gear = '';
+  $('#gearSel').innerHTML = '<option value="">desligada</option>' +
+    GB.ratios.map((r, g) => `<option value="${g}">${ord(g)} marcha</option>`).join('');
+  $('#gearSel').value = gear;
+  $('#gRatios').value = GB.ratios.map(fmtN).join(' ');
+  $('#gFinal').value = fmtN(GB.final);
+  $('#gW').value = GB.w; $('#gA').value = GB.a; $('#gR').value = GB.r; $('#gAdj').value = fmtN(GB.adj);
+  gearInfo();
+}
+function gearInfo(err) {
+  $('#gTable').innerHTML = GB.ratios.map((r, g) =>
+    `<span>${ord(g)} (${fmtN(r)}) <b>${(kmhPerRpm(g) * 1000).toFixed(1).replace('.', ',')}</b> km/h a 1000 rpm</span>`).join('');
+  const m = $('#gMsg');
+  m.classList.toggle('err', !!err);
+  m.textContent = err || `Pneu ${GB.w}/${GB.a} R${GB.r}: ${tireCirc().toFixed(3).replace('.', ',')} m por volta` +
+    (GB.adj ? ` (com ajuste de ${GB.adj > 0 ? '+' : ''}${fmtN(GB.adj)}%)` : '') +
+    '. Conta pelo RPM: não vale com a embreagem pisada nem com o pneu patinando. Compare com o GPS e use o ajuste pra acertar.';
+  $('#gearInfo').textContent = gear === '' ? 'escolha a marcha'
+    : `${ord(+gear)} · ${(kmhPerRpm(+gear) * 1000).toFixed(1).replace('.', ',')} km/h a cada 1000 rpm`;
+}
+// Cria, atualiza ou remove a coluna calculada de um log (antes de analyze)
+function applySpeed(L) {
+  if (!L) return;
+  const at = L.names.indexOf(SPEED_NAME);
+  const rpmI = L.names.findIndex((nm, i) => i > 0 && /^rpm$/i.test(nm));
+  if (gear === '' || rpmI < 0) {
+    if (at >= 0) { L.names.splice(at, 1); L.units.splice(at, 1); L.cols.splice(at, 1); }
+    return;
+  }
+  const k = kmhPerRpm(+gear), rpm = L.cols[rpmI], col = new Float64Array(L.n);
+  for (let i = 0; i < L.n; i++) col[i] = isFinite(rpm[i]) ? rpm[i] * k : NaN;
+  if (at >= 0) L.cols[at] = col;
+  else { L.names.push(SPEED_NAME); L.units.push('km/h'); L.cols.push(col); }
+}
+function speedChanged(autoSelect) {
+  [D, DB].forEach(L => { if (L) { applySpeed(L); analyze(L); } });
+  if (D) {
+    const at = D.names.indexOf(SPEED_NAME);
+    sel = sel.filter(ci => ci < D.names.length);           // coluna removida: tira da selecao
+    if (at >= 0 && autoSelect && !sel.includes(at)) sel = [...sel, at];
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(sel.map(i => D.names[i]))); } catch (e) {}
+    renderTiles(); renderChips(); renderTable(); requestDraw();
+  }
+  gearInfo();
+}
+$('#gearSel').addEventListener('change', e => {
+  gear = e.target.value;
+  try { localStorage.setItem(GEARSEL_KEY, gear); } catch (e2) {}
+  speedChanged(true);
+});
+function readGearCfg() {
+  const num = id => parseFloat(String($(id).value).replace(',', '.'));
+  const ratios = $('#gRatios').value.replace(/,/g, '.').split(/[\s;\/]+/).map(parseFloat).filter(v => isFinite(v) && v > 0);
+  const n = { ratios, final: num('#gFinal'), w: num('#gW'), a: num('#gA'), r: num('#gR'), adj: num('#gAdj') || 0 };
+  if (!ratios.length || ratios.length > 8 || !(n.final > 0) || !(n.w > 100) || !(n.a > 10) || !(n.r >= 10) || Math.abs(n.adj) > 20) {
+    gearInfo('Confira os números: marchas separadas por espaço (ex.: 3,78 2,12 1,43), diferencial, pneu largura / perfil R aro (ex.: 195 / 50 R 15) e ajuste entre −20 e +20%.');
+    return;
+  }
+  GB = n;
+  try { localStorage.setItem(GEAR_KEY, JSON.stringify(GB)); } catch (e) {}
+  fillGearUI();
+  speedChanged(false);
+}
+['#gRatios', '#gFinal', '#gW', '#gA', '#gR', '#gAdj'].forEach(id => $(id).addEventListener('change', readGearCfg));
+fillGearUI();
+
 // ───────────────────────── Carregar ─────────────────────────
 function showNotice(html, isError) {
   const n = $('#notice');
   n.innerHTML = html; n.classList.toggle('error', !!isError); n.hidden = false;
 }
 function load(L, name, metaExtra) {
+  applySpeed(L);
   analyze(L);
   D = L; D.fileName = name;
   sel = defaultSelection();

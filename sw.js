@@ -1,7 +1,7 @@
-// Service worker do MS2 Log Viewer — deixa o app abrir sem internet (ex.: no
+﻿// Service worker do MS2 Log Viewer â€” deixa o app abrir sem internet (ex.: no
 // carro, conectado no WiFi do dash, que nao tem internet).
 // Ao publicar uma versao nova, troque CACHE pra forcar o celular a atualizar.
-const CACHE = 'ms2log-v10';
+const CACHE = 'ms2log-v11';
 const APP_FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
