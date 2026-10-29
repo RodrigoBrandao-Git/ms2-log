@@ -331,6 +331,25 @@ tr[data-on="false"] td:first-child { color: var(--muted); }
             <div class="gear-tbl" id="gTable"></div>
           </details>
         </div>
+        <div class="gear-bar">
+          <label for="fuelOn" class="gear-lbl">Potência pelos bicos</label>
+          <select class="play-speed" id="fuelOn" aria-describedby="fuelInfo">
+            <option value="">desligada</option><option value="1">ligada</option>
+          </select>
+          <span class="play-time" id="fuelInfo"></span>
+          <details class="manual gear-cfg" id="fuelBox">
+            <summary>Bicos e combustível</summary>
+            <div class="manual-grid">
+              <div class="manual-row">Bicos <input id="fN" class="g-sm" inputmode="numeric" aria-label="Quantidade de bicos"></div>
+              <div class="manual-row">Vazão <input id="fQ" class="g-sm" inputmode="decimal" aria-label="Vazão nominal do bico (lb/h)"> lb/h a <input id="fP" class="g-sm" inputmode="decimal" aria-label="Pressão em que a vazão nominal foi medida (bar)"> bar</div>
+              <div class="manual-row">Pressão de base <input id="fBase" class="g-sm" inputmode="decimal" aria-label="Pressão do regulador com o coletor na pressão atmosférica (bar)"> bar</div>
+              <div class="manual-row">Tempo morto <input id="fDead" class="g-sm" inputmode="decimal" aria-label="Tempo morto do bico a 13,2 V (ms)"> ms + <input id="fBatt" class="g-sm" inputmode="decimal" aria-label="Tempo morto a mais por volt abaixo de 13,2 V (ms/V)"> ms/V</div>
+              <div class="manual-row">BSFC <input id="fBsfc" class="g-sm" inputmode="decimal" aria-label="Consumo específico do combustível (lb/hp·h)"> lb/hp·h</div>
+            </div>
+            <p class="manual-msg" id="fMsg"></p>
+            <div class="gear-tbl" id="fTable"></div>
+          </details>
+        </div>
         <div class="readout" id="readout" aria-live="off"></div>
         <div class="canvas-box">
           <canvas id="chart" aria-label="Gráfico dos canais do log ao longo do tempo"></canvas>
@@ -480,7 +499,26 @@ function parseLog(text) {
     for (let c = 0; c < nc; c++) { const v = parseFloat(p[c]); tmp[c].push(isFinite(v) ? v : NaN); }
   }
   if (tmp[0].length < 2) throw new Error('O arquivo não tem amostras suficientes para desenhar. Pode ser um log de uma conexão muito curta.');
-  return { names, units, cols: tmp.map(a => Float64Array.from(a)), n: tmp[0].length };
+  const L = { names, units, cols: tmp.map(a => Float64Array.from(a)), n: tmp[0].length };
+  addPortBits(L);
+  return L;
+}
+
+// Ar-condicionado no mapa do carro: pedido pela entrada PE1 (ativa em 0 = bit 1
+// de "PORTs BDE" zerado) e rele' do compressor pela saida IAC1 (bit 7 de
+// "PORT T"). Se o log tiver esses bytes, vira canal 0/1 (igual ao PC).
+const AC_BITS = [['AC pedido', 'PORTs BDE', 2, true], ['Compressor AC', 'PORT T', 128, false]];
+function addPortBits(L) {
+  for (const [name, col, mask, activeLow] of AC_BITS) {
+    const ci = L.names.indexOf(col);
+    if (ci < 0 || L.names.includes(name)) continue;
+    const src = L.cols[ci], out = new Float64Array(L.n);
+    for (let i = 0; i < L.n; i++) {
+      const v = src[i];
+      out[i] = isFinite(v) ? (((v & mask) !== 0) !== activeLow ? 1 : 0) : NaN;
+    }
+    L.names.push(name); L.units.push('0/1'); L.cols.push(out);
+  }
 }
 
 // ───────────────────────── Estatisticas ─────────────────────────
@@ -1235,7 +1273,7 @@ $('#cmpFileInput').addEventListener('change', e => {
   const rd = new FileReader();
   rd.onload = () => {
     try {
-      const L = parseLog(String(rd.result)); applySpeed(L); analyze(L); L.fileName = file.name;
+      const L = parseLog(String(rd.result)); applyCalc(L); analyze(L); L.fileName = file.name;
       DB = L; cmpUseSame = false; cmpResetAlign(); cmpHoverX = null; cmpDraw();
     } catch (err) {
       showNotice(`<strong>Não abriu o log B</strong><span>${esc(file.name)}: ${esc(err.message)}</span>`, true);
@@ -1341,17 +1379,20 @@ function applySpeed(L) {
   if (at >= 0) L.cols[at] = col;
   else { L.names.push(SPEED_NAME); L.units.push('km/h'); L.cols.push(col); }
 }
-function speedChanged(autoSelect) {
-  [D, DB].forEach(L => { if (L) { applySpeed(L); analyze(L); } });
+// Canais calculados (velocidade + potencia pelos bicos): refaz nos dois logs e
+// guarda a selecao pelo NOME (tirar uma coluna do meio muda o indice das outras)
+function applyCalc(L) { applySpeed(L); applyFuel(L); }
+function calcChanged(autoNames) {
+  const keep = D ? sel.map(i => D.names[i]) : [];
+  [D, DB].forEach(L => { if (L) { applyCalc(L); analyze(L); } });
   if (D) {
-    const at = D.names.indexOf(SPEED_NAME);
-    sel = sel.filter(ci => ci < D.names.length);           // coluna removida: tira da selecao
-    if (at >= 0 && autoSelect && !sel.includes(at)) sel = [...sel, at];
+    sel = [...new Set([...keep, ...(autoNames || [])])].map(n => D.names.indexOf(n)).filter(i => i > 0).sort((a, b) => a - b);
     try { localStorage.setItem(STORE_KEY, JSON.stringify(sel.map(i => D.names[i]))); } catch (e) {}
     renderTiles(); renderChips(); renderTable(); requestDraw();
   }
-  gearInfo();
+  gearInfo(); fuelInfo();
 }
+function speedChanged(autoSelect) { calcChanged(autoSelect ? [SPEED_NAME] : []); }
 $('#gearSel').addEventListener('change', e => {
   gear = e.target.value;
   try { localStorage.setItem(GEARSEL_KEY, gear); } catch (e2) {}
@@ -1373,13 +1414,135 @@ function readGearCfg() {
 ['#gRatios', '#gFinal', '#gW', '#gA', '#gR', '#gAdj'].forEach(id => $(id).addEventListener('change', readGearCfg));
 fillGearUI();
 
+// ───────────────────────── Potência pelos bicos ─────────────────────────
+// Vazao do bico na pressao do momento: nominal x raiz(dP / pressao nominal), com
+// dP = pressao do combustivel - pressao do coletor relativa (MAP - barometro).
+// O sensor do carro le relativo a atmosfera (manometro): com o regulador 1:1,
+// combustivel - boost fica em ~4,7-5,0 bar da lenta ao boost. Log sem sensor
+// (ou sensor sem pressao, le -1,2 com o motor parado): usa a pressao de base.
+// Combustivel = bicos x vazao x fracao aberta; fracao = duty x (PW - tempo
+// morto) / PW, porque o duty da ECU conta o tempo morto (1,02 ms + 0,14 ms/V
+// abaixo de 13,2 V no mapa do carro); duty >= 99,5% = bico aberto direto.
+// Potencia no virabrequim = combustivel / BSFC (cv = hp x 1,01387).
+// So' vale em regime (pe' no fundo, sem AE); nao substitui o dinamometro.
+const FUEL_KEY = 'ms2log.fuel', FUELON_KEY = 'ms2log.fuelon';
+const FC_DEFAULT = { n: 4, q: 65, p: 3, base: 5, dead: 1.02, batt: 0.14, bsfc: 0.95 };   // carro do dono (etanol hidratado)
+const F_EXP = 'Pressão comb. esperada', F_LACK = 'Falta pressão comb.', F_Q = 'Vazão do bico', F_TOT = 'Combustível total',
+      F_CV = 'Potência est.';
+const FUEL_COLS = [F_EXP, F_LACK, F_Q, F_TOT, F_CV];
+const HP2CV = 1.01387, LBH2CC = 10.5;          // 1 lb/h de fluido de teste ~ 10,5 cc/min
+let FC = FC_DEFAULT, fuelOn = '';
+try { const s = JSON.parse(localStorage.getItem(FUEL_KEY) || 'null'); if (s && s.n > 0) FC = { ...FC_DEFAULT, ...s }; } catch (e) {}
+try { fuelOn = localStorage.getItem(FUELON_KEY) || ''; } catch (e) {}
+const qAt = dp => dp > 0 ? FC.q * Math.sqrt(dp / FC.p) : 0;
+const f1 = v => v.toFixed(1).replace('.', ','), f2 = v => v.toFixed(2).replace('.', ',');
+
+function dropCol(L, name) {
+  const at = L.names.indexOf(name);
+  if (at >= 0) { L.names.splice(at, 1); L.units.splice(at, 1); L.cols.splice(at, 1); }
+}
+function applyFuel(L) {
+  if (!L) return;
+  FUEL_COLS.forEach(nm => dropCol(L, nm));
+  L.fuelRep = null;
+  if (!fuelOn) return;
+  const find = re => L.names.findIndex((nm, i) => i > 0 && re.test(nm));
+  const iMap = find(/^map$/i), iDuty = find(/^duty ?cycle ?1$|^duty$/i), iPw = find(/^pw ?1?$/i), iFuel = find(/^fuel( ?press.*)?$/i),
+        iBaro = find(/^baro/i), iBatt = find(/^batt/i), iRpm = find(/^rpm$/i), iTps = find(/^tps$/i);
+  if (iMap < 0 || iDuty < 0) { L.fuelRep = { err: 'O log precisa das colunas MAP e DutyCycle1.' }; return; }
+  const t = L.cols[0], mp = L.cols[iMap], du = L.cols[iDuty], n = L.n;
+  const col = k => k >= 0 ? L.cols[k] : null;
+  const pw = col(iPw), fp = col(iFuel), bar = col(iBaro), bt = col(iBatt), rpm = col(iRpm), tps = col(iTps);
+  let baro0 = 101.3;                                         // sem barometro: MAP com o motor parado
+  if (!bar && rpm) { const off = []; for (let i = 0; i < n; i++) if (rpm[i] < 50 && isFinite(mp[i])) off.push(mp[i]); if (off.length) baro0 = off.sort((a, b) => a - b)[off.length >> 1]; }
+  const cExp = new Float64Array(n), cLack = new Float64Array(n), cQ = new Float64Array(n), cTot = new Float64Array(n), cCv = new Float64Array(n);
+  const R = { pk: null, du: null, lack: null, base: [], sensor: !!fp, nP: 0 };
+  for (let i = 0; i < n; i++) {
+    const b = bar && bar[i] > 50 ? bar[i] : baro0;
+    const boost = (mp[i] - b) / 100, exp = FC.base + boost;
+    const hasP = fp && isFinite(fp[i]) && fp[i] > 0.5;
+    const dp = (hasP ? fp[i] : exp) - boost, q = qAt(dp);
+    const dead = FC.dead + (bt && isFinite(bt[i]) ? FC.batt * Math.max(0, 13.2 - bt[i]) : 0);
+    let open = du[i] / 100;
+    if (du[i] >= 99.5) open = 1;
+    else if (pw && pw[i] > 0) open *= Math.max(0, pw[i] - dead) / pw[i];
+    const tot = FC.n * q * Math.min(Math.max(open, 0), 1), cv = tot / FC.bsfc * HP2CV;
+    cExp[i] = fp ? exp : NaN; cLack[i] = hasP ? exp - fp[i] : NaN; cQ[i] = isFinite(q) ? q : NaN;
+    cTot[i] = isFinite(tot) ? tot : NaN; cCv[i] = isFinite(cv) ? cv : NaN;
+    if (!isFinite(mp[i]) || !isFinite(du[i]) || (rpm && rpm[i] < 600)) continue;
+    const at = { i, t: t[i] - t[0], rpm: rpm ? rpm[i] : NaN, map: mp[i] };
+    if ((!tps || tps[i] > 70) && (!R.pk || cv > R.pk.v)) R.pk = { ...at, v: cv };
+    if (!R.du || du[i] > R.du.v) R.du = { ...at, v: du[i] };
+    if (hasP) {
+      R.nP++;
+      if (Math.abs(boost) < 0.1) R.base.push(fp[i] - boost);
+      if (boost > 0.2 && (!R.lack || exp - fp[i] > R.lack.v)) R.lack = { ...at, v: exp - fp[i], fp: fp[i], exp };
+    }
+  }
+  R.base = R.base.length ? R.base.sort((a, b) => a - b)[R.base.length >> 1] : null;
+  if (fp && R.nP) { L.names.push(F_EXP, F_LACK); L.units.push('bar', 'bar'); L.cols.push(cExp, cLack); }
+  L.names.push(F_Q, F_TOT, F_CV); L.units.push('lb/h', 'lb/h', 'cv'); L.cols.push(cQ, cTot, cCv);
+  L.fuelRep = R;
+}
+function fillFuelUI() {
+  $('#fuelOn').value = fuelOn;
+  $('#fN').value = FC.n; $('#fQ').value = fmtN(FC.q); $('#fP').value = fmtN(FC.p); $('#fBase').value = fmtN(FC.base);
+  $('#fDead').value = fmtN(FC.dead); $('#fBatt').value = fmtN(FC.batt); $('#fBsfc').value = fmtN(FC.bsfc);
+  fuelInfo();
+}
+function fuelInfo(err) {
+  const qb = qAt(FC.base), m = $('#fMsg');
+  m.classList.toggle('err', !!err);
+  m.textContent = err || `Bico de ${fmtN(FC.q)} lb/h a ${fmtN(FC.p)} bar dá ${f1(qb)} lb/h (${(qb * LBH2CC).toFixed(0)} cc/min) a ` +
+    `${fmtN(FC.base)} bar de diferença. Com pressão no log, a conta usa a pressão de cada momento menos o boost. A potência é ` +
+    'estimada no virabrequim e só vale em regime, com o pé no fundo (no enriquecimento de aceleração ela sobe sem ter mais ' +
+    'potência). BSFC de referência (pela vazão de catálogo do bico): etanol hidratado turbo ~0,90–1,00 (mais rico, mais alto); ' +
+    'E85 ~0,75–0,85; gasolina turbo ~0,60–0,65. Com um resultado de dinamômetro dá pra acertar o BSFC.';
+  const R = D && D.fuelRep, out = [];
+  if (fuelOn && R && R.err) out.push(`<span>${esc(R.err)}</span>`);
+  else if (fuelOn && R) {
+    if (R.pk) out.push(`<span>Pico <b>${R.pk.v.toFixed(0)} cv</b> aos ${fmtT(R.pk.t)} (${R.pk.rpm.toFixed(0)} rpm, ${R.pk.map.toFixed(0)} kPa)</span>`);
+    if (R.du) out.push(`<span>Duty máximo <b>${R.du.v.toFixed(0)}%</b> aos ${fmtT(R.du.t)}` +
+      (R.du.v >= 99.5 ? ' — bicos abertos direto: acima disso não entra mais combustível' : R.du.v >= 85 ? ' — perto do limite dos bicos' : '') + '</span>');
+    if (!R.sensor) out.push('<span>Log sem pressão de combustível: usando a pressão de base</span>');
+    else {
+      if (R.base !== null) out.push(`<span>Pressão de base medida <b>${f2(R.base)} bar</b> (coletor na pressão atmosférica)</span>`);
+      if (R.lack) out.push(`<span>Maior falta de pressão <b>${f2(R.lack.v)} bar</b> aos ${fmtT(R.lack.t)}: ${f2(R.lack.fp)} em vez de ${f2(R.lack.exp)} bar ` +
+        `a ${R.lack.map.toFixed(0)} kPa${R.lack.v >= 0.3 ? ' — bomba ou linha não acompanham' : ''}</span>`);
+    }
+  }
+  $('#fTable').innerHTML = out.join('');
+  $('#fuelInfo').textContent = !fuelOn ? 'liga pra estimar a potência' : R && R.pk ? `pico ≈ ${R.pk.v.toFixed(0)} cv` : '';
+}
+$('#fuelOn').addEventListener('change', e => {
+  fuelOn = e.target.value;
+  try { localStorage.setItem(FUELON_KEY, fuelOn); } catch (e2) {}
+  calcChanged(fuelOn ? [F_CV] : []);
+});
+function readFuelCfg() {
+  const num = id => parseFloat(String($(id).value).replace(',', '.'));
+  const c = { n: num('#fN'), q: num('#fQ'), p: num('#fP'), base: num('#fBase'), dead: num('#fDead') || 0, batt: num('#fBatt') || 0, bsfc: num('#fBsfc') };
+  if (!(c.n >= 1 && c.n <= 16 && Number.isInteger(c.n)) || !(c.q > 0) || !(c.p > 0) || !(c.base > 0 && c.base < 15) ||
+      !(c.dead >= 0 && c.dead < 5) || !(c.batt >= 0 && c.batt < 2) || !(c.bsfc > 0.2 && c.bsfc < 2)) {
+    fuelInfo('Confira os números: bicos (1 a 16), vazão em lb/h e a pressão em que ela foi medida (ex.: 65 a 3 bar), pressão de ' +
+             'base do regulador (ex.: 5), tempo morto em ms (ex.: 1,02 + 0,14 ms/V) e BSFC (ex.: 0,95).');
+    return;
+  }
+  FC = c;
+  try { localStorage.setItem(FUEL_KEY, JSON.stringify(FC)); } catch (e) {}
+  fillFuelUI();
+  calcChanged([]);
+}
+['#fN', '#fQ', '#fP', '#fBase', '#fDead', '#fBatt', '#fBsfc'].forEach(id => $(id).addEventListener('change', readFuelCfg));
+fillFuelUI();
+
 // ───────────────────────── Carregar ─────────────────────────
 function showNotice(html, isError) {
   const n = $('#notice');
   n.innerHTML = html; n.classList.toggle('error', !!isError); n.hidden = false;
 }
 function load(L, name, metaExtra) {
-  applySpeed(L);
+  applyCalc(L);
   analyze(L);
   D = L; D.fileName = name;
   sel = defaultSelection();
@@ -1389,7 +1552,7 @@ function load(L, name, metaExtra) {
   if (!(v1 > v0)) v1 = v0 + 1;
   $('#fileName').textContent = name;
   $('#fileMeta').textContent = `${L.names.length - 1} canais · ${fmtDur(L.duration)}${metaExtra ? ' · ' + metaExtra : ''}`;
-  renderTiles(); renderChips(); renderTable(); requestDraw();
+  renderTiles(); renderChips(); renderTable(); requestDraw(); fuelInfo();
   cmpOnNewA();   // log A novo: realinha o B (se houver) pelo inicio
   $('#emptyState').hidden = true;
   document.querySelectorAll('.needs-log').forEach(s => { s.hidden = false; });
