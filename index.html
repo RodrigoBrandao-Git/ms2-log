@@ -173,6 +173,18 @@ button.tile:hover { border-color: #463d35; }
 .gear-tbl span { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px;
                  font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .gear-tbl b { color: var(--fg); font-weight: 600; }
+/* Tabela de BSFC de referencia (painel "Bicos e combustivel") */
+.bsfc-box { margin-top: 10px; overflow-x: auto; }
+.bsfc-tbl { width: auto; min-width: 280px; font-size: .82rem; border: 1px solid var(--line); border-radius: 8px; }
+.bsfc-tbl caption { text-align: left; color: var(--muted); font-size: .8rem; padding: 0 0 6px; }
+.bsfc-tbl th, .bsfc-tbl td { padding: 4px 8px; text-align: left; }
+.bsfc-tbl th { color: var(--muted); font-weight: 600; }
+.bsfc-tbl tr.on td:first-child { color: var(--accent); font-weight: 600; }
+.bsfc-btn { font: 600 .82rem var(--font-body); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line);
+            border-radius: 6px; padding: 3px 8px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.bsfc-btn:hover { border-color: var(--accent); }
+.bsfc-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bsfc-btn.on { border-color: var(--accent); color: var(--accent); }
 /* Valores ao vivo dos canais ligados — "painel" durante a reproducao */
 .readout { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
 .readout:empty { display: none; }
@@ -348,6 +360,14 @@ tr[data-on="false"] td:first-child { color: var(--muted); }
             </div>
             <p class="manual-msg" id="fMsg"></p>
             <div class="gear-tbl" id="fTable"></div>
+            <div class="bsfc-box">
+              <table class="bsfc-tbl" aria-describedby="fRefNote">
+                <caption>BSFC de referência (lb/hp·h) — toque num valor pra usar</caption>
+                <thead><tr><th>Combustível</th><th>Aspirado</th><th>Turbo</th></tr></thead>
+                <tbody id="fRef"></tbody>
+              </table>
+              <p class="manual-msg" id="fRefNote"></p>
+            </div>
           </details>
         </div>
         <div class="readout" id="readout" aria-live="off"></div>
@@ -1448,7 +1468,7 @@ function applyFuel(L) {
   if (!fuelOn) return;
   const find = re => L.names.findIndex((nm, i) => i > 0 && re.test(nm));
   const iMap = find(/^map$/i), iDuty = find(/^duty ?cycle ?1$|^duty$/i), iPw = find(/^pw ?1?$/i), iFuel = find(/^fuel( ?press.*)?$/i),
-        iBaro = find(/^baro/i), iBatt = find(/^batt/i), iRpm = find(/^rpm$/i), iTps = find(/^tps$/i);
+        iBaro = find(/^baro/i), iBatt = find(/^batt/i), iRpm = find(/^rpm$/i), iTps = find(/^tps$/i), iLam = find(/^lambda$/i);
   if (iMap < 0 || iDuty < 0) { L.fuelRep = { err: 'O log precisa das colunas MAP e DutyCycle1.' }; return; }
   const t = L.cols[0], mp = L.cols[iMap], du = L.cols[iDuty], n = L.n;
   const col = k => k >= 0 ? L.cols[k] : null;
@@ -1480,6 +1500,11 @@ function applyFuel(L) {
     }
   }
   R.base = R.base.length ? R.base.sort((a, b) => a - b)[R.base.length >> 1] : null;
+  if (R.pk && iLam >= 0) {                                   // lambda no pico (0,25 s depois: atraso da sonda)
+    const tl = t[R.pk.i] + 0.25; let k = R.pk.i;
+    while (k < n - 1 && t[k] < tl) k++;
+    R.pk.lam = L.cols[iLam][k];
+  }
   if (fp && R.nP) { L.names.push(F_EXP, F_LACK); L.units.push('bar', 'bar'); L.cols.push(cExp, cLack); }
   L.names.push(F_Q, F_TOT, F_CV); L.units.push('lb/h', 'lb/h', 'cv'); L.cols.push(cQ, cTot, cCv);
   L.fuelRep = R;
@@ -1513,7 +1538,52 @@ function fuelInfo(err) {
   }
   $('#fTable').innerHTML = out.join('');
   $('#fuelInfo').textContent = !fuelOn ? 'liga pra estimar a potência' : R && R.pk ? `pico ≈ ${R.pk.v.toFixed(0)} cv` : '';
+  bsfcRef(R);
 }
+
+// BSFC tipico no virabrequim, pela vazao de catalogo do bico (lb/h de fluido de
+// teste), com a mistura de potencia usual (lambda ~0,80 no turbo, ~0,88 no
+// aspirado). Faixas de referencia, nao medidas: o valor certo sai de um
+// dinamometro. Mais rico = mais combustivel pra mesma potencia = BSFC maior.
+const BSFC_REF = [
+  ['Gasolina pura', [0.45, 0.50], [0.60, 0.65]],
+  ['Gasolina comum (E27)', [0.48, 0.53], [0.63, 0.68]],
+  ['E85', [0.60, 0.65], [0.75, 0.85]],
+  ['Etanol anidro (E100)', [0.65, 0.72], [0.85, 0.95]],
+  ['Etanol hidratado', [0.70, 0.77], [0.90, 1.00]],
+  ['Metanol', [0.95, 1.05], [1.10, 1.25]],
+];
+const BSFC_LAM_TURBO = 0.80;
+function bsfcRef(R) {
+  const mid = r => Math.round((r[0] + r[1]) / 2 * 100) / 100;
+  // as faixas se sobrepoem: marca so' a de meio mais perto do valor atual (e que contem ele)
+  let best = null, bd = Infinity;
+  BSFC_REF.forEach(([, na, tb]) => [na, tb].forEach(r => {
+    const d = Math.abs(mid(r) - FC.bsfc);
+    if (FC.bsfc >= r[0] - 1e-9 && FC.bsfc <= r[1] + 1e-9 && d < bd - 1e-9) { best = r; bd = d; }
+  }));
+  const inR = r => r === best;
+  const cell = r => `<td><button type="button" class="bsfc-btn${inR(r) ? ' on' : ''}" data-v="${mid(r)}" ` +
+    `aria-label="Usar BSFC ${f2(mid(r))}">${f2(r[0])}–${f2(r[1])}</button></td>`;
+  $('#fRef').innerHTML = BSFC_REF.map(([nm, na, tb]) =>
+    `<tr class="${inR(na) || inR(tb) ? 'on' : ''}"><td>${esc(nm)}</td>${cell(na)}${cell(tb)}</tr>`).join('');
+  let note = 'Faixas típicas no virabrequim, com a mistura de potência de costume (λ ~0,80 no turbo, ~0,88 no aspirado). ' +
+    'O clique usa o meio da faixa. Mais rico gasta mais combustível pra mesma potência: o BSFC sobe na mesma proporção ' +
+    '(λ 0,75 em vez de 0,80 = +7%).';
+  const lam = R && R.pk && R.pk.lam;
+  if (fuelOn && isFinite(lam) && lam > 0.5 && lam < 1.2) {
+    const k = BSFC_LAM_TURBO / lam;
+    note += ` No pico deste log a lambda era ${f2(lam)}: pra uma faixa de turbo, multiplique por ~${f2(k)} ` +
+      `(ex.: etanol hidratado ${f2(0.90 * k)}–${f2(1.00 * k)}).`;
+  }
+  $('#fRefNote').textContent = note;
+}
+$('#fRef').addEventListener('click', e => {
+  const b = e.target.closest('.bsfc-btn');
+  if (!b) return;
+  $('#fBsfc').value = fmtN(+b.dataset.v);
+  readFuelCfg();
+});
 $('#fuelOn').addEventListener('change', e => {
   fuelOn = e.target.value;
   try { localStorage.setItem(FUELON_KEY, fuelOn); } catch (e2) {}
