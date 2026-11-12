@@ -1444,13 +1444,16 @@ fillGearUI();
 // morto) / PW, porque o duty da ECU conta o tempo morto (1,02 ms + 0,14 ms/V
 // abaixo de 13,2 V no mapa do carro); duty >= 99,5% = bico aberto direto.
 // Potencia no virabrequim = combustivel / BSFC (cv = hp x 1,01387).
+// Torque = potencia / rpm (kgfm = cv x 716,2 / rpm); abaixo de 1500 rpm fica
+// em branco (a divisao aumenta o ruido e ali nao ha pe' no fundo de verdade).
 // So' vale em regime (pe' no fundo, sem AE); nao substitui o dinamometro.
 const FUEL_KEY = 'ms2log.fuel', FUELON_KEY = 'ms2log.fuelon';
 const FC_DEFAULT = { n: 4, q: 65, p: 3, base: 5, dead: 1.02, batt: 0.14, bsfc: 0.95 };   // carro do dono (etanol hidratado)
 const F_EXP = 'Pressão comb. esperada', F_LACK = 'Falta pressão comb.', F_Q = 'Vazão do bico', F_TOT = 'Combustível total',
-      F_CV = 'Potência est.';
-const FUEL_COLS = [F_EXP, F_LACK, F_Q, F_TOT, F_CV];
+      F_CV = 'Potência est.', F_KGFM = 'Torque est.';
+const FUEL_COLS = [F_EXP, F_LACK, F_Q, F_TOT, F_CV, F_KGFM];
 const HP2CV = 1.01387, LBH2CC = 10.5;          // 1 lb/h de fluido de teste ~ 10,5 cc/min
+const CV2KGFM = 716.2, KGFM2NM = 9.80665, TQ_MIN_RPM = 1500;
 let FC = FC_DEFAULT, fuelOn = '';
 try { const s = JSON.parse(localStorage.getItem(FUEL_KEY) || 'null'); if (s && s.n > 0) FC = { ...FC_DEFAULT, ...s }; } catch (e) {}
 try { fuelOn = localStorage.getItem(FUELON_KEY) || ''; } catch (e) {}
@@ -1475,8 +1478,8 @@ function applyFuel(L) {
   const pw = col(iPw), fp = col(iFuel), bar = col(iBaro), bt = col(iBatt), rpm = col(iRpm), tps = col(iTps);
   let baro0 = 101.3;                                         // sem barometro: MAP com o motor parado
   if (!bar && rpm) { const off = []; for (let i = 0; i < n; i++) if (rpm[i] < 50 && isFinite(mp[i])) off.push(mp[i]); if (off.length) baro0 = off.sort((a, b) => a - b)[off.length >> 1]; }
-  const cExp = new Float64Array(n), cLack = new Float64Array(n), cQ = new Float64Array(n), cTot = new Float64Array(n), cCv = new Float64Array(n);
-  const R = { pk: null, du: null, lack: null, base: [], sensor: !!fp, nP: 0 };
+  const cExp = new Float64Array(n), cLack = new Float64Array(n), cQ = new Float64Array(n), cTot = new Float64Array(n), cCv = new Float64Array(n), cTq = new Float64Array(n);
+  const R = { pk: null, tq: null, du: null, lack: null, base: [], sensor: !!fp, nP: 0 };
   for (let i = 0; i < n; i++) {
     const b = bar && bar[i] > 50 ? bar[i] : baro0;
     const boost = (mp[i] - b) / 100, exp = FC.base + boost;
@@ -1489,9 +1492,12 @@ function applyFuel(L) {
     const tot = FC.n * q * Math.min(Math.max(open, 0), 1), cv = tot / FC.bsfc * HP2CV;
     cExp[i] = fp ? exp : NaN; cLack[i] = hasP ? exp - fp[i] : NaN; cQ[i] = isFinite(q) ? q : NaN;
     cTot[i] = isFinite(tot) ? tot : NaN; cCv[i] = isFinite(cv) ? cv : NaN;
+    const tq = rpm && rpm[i] >= TQ_MIN_RPM ? cv * CV2KGFM / rpm[i] : NaN;
+    cTq[i] = isFinite(tq) ? tq : NaN;
     if (!isFinite(mp[i]) || !isFinite(du[i]) || (rpm && rpm[i] < 600)) continue;
     const at = { i, t: t[i] - t[0], rpm: rpm ? rpm[i] : NaN, map: mp[i] };
     if ((!tps || tps[i] > 70) && (!R.pk || cv > R.pk.v)) R.pk = { ...at, v: cv };
+    if ((!tps || tps[i] > 70) && isFinite(tq) && (!R.tq || tq > R.tq.v)) R.tq = { ...at, v: tq };
     if (!R.du || du[i] > R.du.v) R.du = { ...at, v: du[i] };
     if (hasP) {
       R.nP++;
@@ -1507,6 +1513,7 @@ function applyFuel(L) {
   }
   if (fp && R.nP) { L.names.push(F_EXP, F_LACK); L.units.push('bar', 'bar'); L.cols.push(cExp, cLack); }
   L.names.push(F_Q, F_TOT, F_CV); L.units.push('lb/h', 'lb/h', 'cv'); L.cols.push(cQ, cTot, cCv);
+  if (rpm) { L.names.push(F_KGFM); L.units.push('kgfm'); L.cols.push(cTq); }
   L.fuelRep = R;
 }
 function fillFuelUI() {
@@ -1521,12 +1528,14 @@ function fuelInfo(err) {
   m.textContent = err || `Bico de ${fmtN(FC.q)} lb/h a ${fmtN(FC.p)} bar dá ${f1(qb)} lb/h (${(qb * LBH2CC).toFixed(0)} cc/min) a ` +
     `${fmtN(FC.base)} bar de diferença. Com pressão no log, a conta usa a pressão de cada momento menos o boost. A potência é ` +
     'estimada no virabrequim e só vale em regime, com o pé no fundo (no enriquecimento de aceleração ela sobe sem ter mais ' +
-    'potência). BSFC de referência (pela vazão de catálogo do bico): etanol hidratado turbo ~0,90–1,00 (mais rico, mais alto); ' +
+    'potência). O torque é a potência dividida pelo giro (só acima de 1500 rpm). BSFC de referência (pela vazão de catálogo do bico): etanol hidratado turbo ~0,90–1,00 (mais rico, mais alto); ' +
     'E85 ~0,75–0,85; gasolina turbo ~0,60–0,65. Com um resultado de dinamômetro dá pra acertar o BSFC.';
   const R = D && D.fuelRep, out = [];
   if (fuelOn && R && R.err) out.push(`<span>${esc(R.err)}</span>`);
   else if (fuelOn && R) {
     if (R.pk) out.push(`<span>Pico <b>${R.pk.v.toFixed(0)} cv</b> aos ${fmtT(R.pk.t)} (${R.pk.rpm.toFixed(0)} rpm, ${R.pk.map.toFixed(0)} kPa)</span>`);
+    if (R.tq) out.push(`<span>Torque máximo <b>${f1(R.tq.v)} kgfm</b> (${(R.tq.v * KGFM2NM).toFixed(0)} Nm) aos ${fmtT(R.tq.t)} ` +
+      `(${R.tq.rpm.toFixed(0)} rpm, ${R.tq.map.toFixed(0)} kPa)</span>`);
     if (R.du) out.push(`<span>Duty máximo <b>${R.du.v.toFixed(0)}%</b> aos ${fmtT(R.du.t)}` +
       (R.du.v >= 99.5 ? ' — bicos abertos direto: acima disso não entra mais combustível' : R.du.v >= 85 ? ' — perto do limite dos bicos' : '') + '</span>');
     if (!R.sensor) out.push('<span>Log sem pressão de combustível: usando a pressão de base</span>');
@@ -1537,7 +1546,7 @@ function fuelInfo(err) {
     }
   }
   $('#fTable').innerHTML = out.join('');
-  $('#fuelInfo').textContent = !fuelOn ? 'liga pra estimar a potência' : R && R.pk ? `pico ≈ ${R.pk.v.toFixed(0)} cv` : '';
+  $('#fuelInfo').textContent = !fuelOn ? 'liga pra estimar a potência' : R && R.pk ? `pico ≈ ${R.pk.v.toFixed(0)} cv` + (R.tq ? ` · ${f1(R.tq.v)} kgfm` : '') : '';
   bsfcRef(R);
 }
 
